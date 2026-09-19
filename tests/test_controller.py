@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -45,7 +46,7 @@ def _make_controller(audio=True, fail_start=False):
     controller = RecordingController(
         make_recorder=make_recorder,
         audio_available=lambda: audio,
-        make_path=lambda: "/tmp/screen_test.mp4",
+        make_path=lambda base_dir=None: "/tmp/screen_test.mp4",
     )
     return controller, created, calls
 
@@ -137,3 +138,32 @@ def test_from_defaults_builds_idle_controller():
     c = RecordingController.from_defaults()
     assert c.state is State.IDLE
     assert c._aspect == "16:9"
+
+
+def test_save_dir_default_is_none():
+    c, _, _ = _make_controller(audio=True)
+    assert c._save_dir is None
+
+
+def test_set_save_dir_used_by_make_path():
+    c, created, _ = _make_controller(audio=True)
+    paths = []
+
+    def make_path(base_dir=None):
+        paths.append(base_dir)
+        return f"/tmp/screen_{base_dir}.mp4"
+
+    c._make_path = make_path
+    c.set_region(Region(0, 0, 640, 360))
+    c.set_save_dir("/tmp/my_dir")
+    c.start_recording()
+    assert paths[-1] == Path("/tmp/my_dir")
+    c.stop_recording()
+
+
+def test_set_save_dir_none_resets_default():
+    c, _, _ = _make_controller(audio=True)
+    c.set_save_dir("/tmp/other")
+    assert c._save_dir == Path("/tmp/other")
+    c.set_save_dir(None)
+    assert c._save_dir is None

@@ -6,6 +6,7 @@ No pause/resume (R6). One start->stop cycle produces exactly one file (R8).
 from __future__ import annotations
 
 from enum import Enum
+from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
@@ -44,6 +45,7 @@ class RecordingController(QObject):
         self._aspect = DEFAULT_ASPECT
         self._recorder = None
         self._out_path = None
+        self._save_dir = None  # None => default ~/Videos
 
     @classmethod
     def from_defaults(cls, parent=None) -> "RecordingController":
@@ -81,6 +83,14 @@ class RecordingController(QObject):
 
     def set_region(self, region) -> None:
         self._region = region
+
+    def set_save_dir(self, directory: str | Path | None) -> None:
+        """Set the output directory (R3). None restores the default (~/Videos)."""
+        self._save_dir = Path(directory).expanduser() if directory else None
+
+    @property
+    def save_dir(self) -> Path | None:
+        return self._save_dir
 
     def _set_state(self, state: State) -> None:
         if state != self._state:
@@ -122,7 +132,7 @@ class RecordingController(QObject):
 
     def _begin(self, with_audio: bool) -> None:
         try:
-            self._out_path = self._make_path()
+            self._out_path = self._make_path(base_dir=self._save_dir)
             recorder = self._make_recorder(
                 self._region, self._aspect, self._out_path, with_audio
             )

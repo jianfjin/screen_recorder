@@ -68,3 +68,12 @@ def test_make_output_path_avoids_same_second_collision(tmp_path):
     assert p2.name == "screen_20260711-123456-1.mp4"
     assert p3.name == "screen_20260711-123456-2.mp4"
     assert len({p1, p2, p3}) == 3
+
+
+def test_make_output_path_defaults_to_home_videos(tmp_path, monkeypatch):
+    from pathlib import Path as _P
+    monkeypatch.setattr(_P, "home", staticmethod(lambda: tmp_path))
+    from app.encoder import make_output_path as f
+    p = f(when=datetime.datetime(2026, 7, 11, 12, 34, 56))
+    assert p.parent == tmp_path / "Videos"
+    assert p.parent.exists()
