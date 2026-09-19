@@ -12,6 +12,8 @@ ASPECTS = {
     "3:2": (3, 2),
 }
 
+DEFAULT_ASPECT = "16:9"
+
 # Fixed 1080p output targets per aspect (KTD5 / R4).
 TARGETS = {
     "16:9": (1920, 1080),

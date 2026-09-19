@@ -9,6 +9,8 @@ from enum import Enum
 
 from PySide6.QtCore import QObject, Signal
 
+from .aspect import DEFAULT_ASPECT
+
 
 class State(str, Enum):
     IDLE = "idle"
@@ -38,7 +40,7 @@ class RecordingController(QObject):
         self._make_path = make_path
         self._state = State.IDLE
         self._region = None
-        self._aspect = "16:9"
+        self._aspect = DEFAULT_ASPECT
         self._recorder = None
         self._out_path = None
 
