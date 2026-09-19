@@ -25,7 +25,14 @@ def make_output_path(when: datetime | None = None,
     when = when or datetime.now()
     base = Path(base_dir) if base_dir is not None else Path.home() / "Videos"
     base.mkdir(parents=True, exist_ok=True)
-    return base / f"screen_{when:%Y%m%d-%H%M%S}.mp4"
+    path = base / f"screen_{when:%Y%m%d-%H%M%S}.mp4"
+    # Guard against same-second collisions overwriting a previous recording
+    # (build_args passes -y, which would silently clobber an existing file).
+    n = 1
+    while path.exists():
+        path = base / f"screen_{when:%Y%m%d-%H%M%S}-{n}.mp4"
+        n += 1
+    return path
 
 
 def build_args(region: Region, aspect: str, out_path: str | os.PathLike,

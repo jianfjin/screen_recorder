@@ -53,3 +53,18 @@ def test_make_output_path_pattern(tmp_path):
     assert p.name == "screen_20260711-123456.mp4"
     assert p.parent == tmp_path
     assert p.parent.exists()
+
+
+def test_make_output_path_avoids_same_second_collision(tmp_path):
+    # Model the real flow: each recording's file is on disk before the next
+    # name is reserved, so a same-second re-record must not clobber it.
+    when = datetime.datetime(2026, 7, 11, 12, 34, 56)
+    p1 = make_output_path(when=when, base_dir=tmp_path)
+    p1.write_bytes(b"x")
+    p2 = make_output_path(when=when, base_dir=tmp_path)
+    p2.write_bytes(b"x")
+    p3 = make_output_path(when=when, base_dir=tmp_path)
+    assert p1.name == "screen_20260711-123456.mp4"
+    assert p2.name == "screen_20260711-123456-1.mp4"
+    assert p3.name == "screen_20260711-123456-2.mp4"
+    assert len({p1, p2, p3}) == 3

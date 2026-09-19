@@ -115,3 +115,25 @@ def test_start_failure_does_not_enter_recording():
     c.start_recording()
     assert c.state is State.IDLE
     assert errors and "boom" in errors[0]
+
+
+def test_aspect_change_invalidates_region():
+    c, _, _ = _make_controller(audio=True)
+    invalidated = []
+    c.region_invalidated.connect(lambda: invalidated.append(1))
+    c.set_region(Region(0, 0, 640, 360))
+    c.set_aspect("3:2")
+    assert c._region is None
+    assert invalidated == [1]
+    # switching to the same aspect is a no-op; a fresh region sticks
+    c.set_region(Region(0, 0, 640, 360))
+    c.set_aspect("3:2")
+    assert c._region is not None
+    assert invalidated == [1]
+
+
+def test_from_defaults_builds_idle_controller():
+    _app()
+    c = RecordingController.from_defaults()
+    assert c.state is State.IDLE
+    assert c._aspect == "16:9"

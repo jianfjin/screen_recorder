@@ -29,6 +29,7 @@ class RecordingController(QObject):
 
     state_changed = Signal(str)
     region_ready = Signal(object)
+    region_invalidated = Signal()
     audio_missing = Signal()
     recording_stopped = Signal(str)
     error = Signal(str)
@@ -44,12 +45,39 @@ class RecordingController(QObject):
         self._recorder = None
         self._out_path = None
 
+    @classmethod
+    def from_defaults(cls, parent=None) -> "RecordingController":
+        """Wire production defaults: real ffmpeg Recorder, live monitor probe,
+        ~/Videos output paths. The single place that binds app dependencies."""
+        from .encoder import Recorder, build_args, make_output_path
+        from .preflight import check_audio_monitor
+
+        def make_recorder(region, aspect, out_path, with_audio, display=None):
+            return Recorder(build_args(region, aspect, out_path,
+                                       with_audio=with_audio, display=display))
+
+        return cls(
+            make_recorder=make_recorder,
+            audio_available=check_audio_monitor,
+            make_path=make_output_path,
+            parent=parent,
+        )
+
     @property
     def state(self) -> State:
         return self._state
 
     def set_aspect(self, aspect: str) -> None:
+        """Change output aspect. A region is locked to the ratio chosen when it
+        was drawn (R3), so switching ratio invalidates any selected region to
+        avoid scaling a mismatched region and distorting the output."""
+        if aspect == self._aspect:
+            return
         self._aspect = aspect
+        if self._region is not None:
+            self._region = None
+            if self._state != State.RECORDING:
+                self.region_invalidated.emit()
 
     def set_region(self, region) -> None:
         self._region = region

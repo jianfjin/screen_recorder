@@ -17,9 +17,7 @@ from PySide6.QtWidgets import (
 
 from .aspect import ASPECTS
 from .controller import RecordingController, State
-from .encoder import Recorder, build_args, make_output_path
 from .overlay import RegionOverlay
-from .preflight import check_audio_monitor
 
 
 class MainWindow(QMainWindow):
@@ -29,12 +27,7 @@ class MainWindow(QMainWindow):
         self.setFixedSize(520, 140)
 
         self._overlay = None
-        self._controller = controller or RecordingController(
-            make_recorder=self._default_make_recorder,
-            audio_available=check_audio_monitor,
-            make_path=make_output_path,
-            parent=self,
-        )
+        self._controller = controller or RecordingController.from_defaults(parent=self)
 
         central = QWidget(self)
         self.setCentralWidget(central)
@@ -66,14 +59,10 @@ class MainWindow(QMainWindow):
 
         self._controller.state_changed.connect(self._on_state_changed)
         self._controller.region_ready.connect(self._on_region_ready)
+        self._controller.region_invalidated.connect(self._on_region_invalidated)
         self._controller.audio_missing.connect(self._on_audio_missing)
         self._controller.recording_stopped.connect(self._on_stopped)
         self._controller.error.connect(self._on_error)
-
-    # -- wiring helpers ----------------------------------------------------
-    def _default_make_recorder(self, region, aspect, out_path, with_audio):
-        args = build_args(region, aspect, out_path, with_audio=with_audio)
-        return Recorder(args)
 
     def _select_region(self):
         if not self._controller.begin_selection():
@@ -97,6 +86,10 @@ class MainWindow(QMainWindow):
     def _on_region_ready(self, region) -> None:
         self._record_btn.setEnabled(True)
         self._status.setText(f"Region {region.w}x{region.h} ready — press Record.")
+
+    def _on_region_invalidated(self) -> None:
+        self._record_btn.setEnabled(False)
+        self._status.setText("Aspect changed — please select a region again.")
 
     def _on_audio_missing(self) -> None:
         answer = QMessageBox.question(
