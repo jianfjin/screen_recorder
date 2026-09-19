@@ -41,6 +41,10 @@ def build_args(region: Region, aspect: str, out_path: str | os.PathLike,
     target_w, target_h = TARGETS[aspect]
     display = display if display is not None else os.environ.get("DISPLAY", ":0")
     out = Path(out_path).expanduser()
+    # x11grab capture size must be even for the yuv420p libx264 path; the
+    # final size is fixed by the scale filter, so flooring is lossless in practice.
+    cap_w = region.w if region.w % 2 == 0 else region.w - 1
+    cap_h = region.h if region.h % 2 == 0 else region.h - 1
 
     args = [
         "-hide_banner", "-loglevel", "error",
@@ -48,7 +52,7 @@ def build_args(region: Region, aspect: str, out_path: str | os.PathLike,
         "-f", "x11grab",
         "-draw_mouse", "0",
         "-framerate", str(DEFAULT_FPS),          # KTD7
-        "-video_size", f"{region.w}x{region.h}",
+        "-video_size", f"{cap_w}x{cap_h}",
         "-i", f"{display}.0+{region.x}+{region.y}",
     ]
     if with_audio:
