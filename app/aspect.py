@@ -29,6 +29,11 @@ class Region:
     w: int
     h: int
 
+    def as_qrect(self):
+        """Return a Qt.QRect for painting (imported lazily to keep module pure)."""
+        from PySide6.QtCore import QRect
+        return QRect(self.x, self.y, self.w, self.h)
+
 
 def _clamp(value, lo, hi):
     return max(lo, min(hi, value))

@@ -1,76 +1,73 @@
-import os
+"""SelectionModel is the pure, testable core of the region selector.
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+The QWidget surface (RegionOverlay) needs a live X display; it is covered by
+the U5 manual smoke test. Here we test the drag state machine directly.
+"""
+from app.aspect import MIN_SHORT_SIDE
+from app.overlay import SelectionModel
 
-import pytest
-from PySide6.QtCore import QEvent, QPointF, Qt
-from PySide6.QtGui import QKeyEvent, QMouseEvent
-from PySide6.QtWidgets import QApplication
-
-from app.overlay import RegionOverlay
-
-
-@pytest.fixture(scope="module")
-def qapp():
-    app = QApplication.instance() or QApplication([])
-    return app
+SW, SH = 3440, 1440
 
 
-def _pt(x, y):
-    return QPointF(float(x), float(y))
-
-
-def _mouse(kind, x, y, button=Qt.LeftButton, buttons=Qt.LeftButton):
-    return QMouseEvent(
-        kind, _pt(x, y), _pt(x, y), button, buttons, Qt.NoModifier
-    )
-
-
-def test_drag_produces_16_9_region(qapp):
-    ov = RegionOverlay("16:9")
-    ov.open()  # offscreen primary screen is 800x600
-    results = []
-    ov.region_selected.connect(results.append)
-    ov.mousePressEvent(_mouse(QEvent.Type.MouseButtonPress, 100, 100))
-    ov.mouseMoveEvent(
-        _mouse(QEvent.Type.MouseMove, 700, 400, buttons=Qt.LeftButton)
-    )
-    ov.mouseReleaseEvent(
-        _mouse(QEvent.Type.MouseButtonRelease, 700, 400, buttons=Qt.NoButton)
-    )
-    assert len(results) == 1
-    r = results[0]
-    # 600-wide drag snaps to 16:9 -> height derived as round(600*9/16)=338
+def test_release_returns_16_9_region():
+    m = SelectionModel("16:9", SW, SH)
+    m.press(100, 100)
+    m.move(1100, 200)          # raw 1000x100 -> width-driven
+    r = m.release()
+    assert r is not None
+    assert r.w / r.h == 1000 / (1000 * 9 / 16) or abs(r.w / r.h - 16 / 9) < 0.01
     assert (r.x, r.y) == (100, 100)
-    assert r.w == 600
-    assert abs(r.w / r.h - 16 / 9) < 0.02
-    ov.close()
 
 
-def test_overlay_clamps_to_screen(qapp):
-    ov = RegionOverlay("16:9")
-    ov.open()
-    results = []
-    ov.region_selected.connect(results.append)
-    ov.mousePressEvent(_mouse(QEvent.Type.MouseButtonPress, 700, 550))
-    ov.mouseMoveEvent(
-        _mouse(QEvent.Type.MouseMove, 100, 100, buttons=Qt.LeftButton)
-    )
-    ov.mouseReleaseEvent(
-        _mouse(QEvent.Type.MouseButtonRelease, 100, 100, buttons=Qt.NoButton)
-    )
-    assert len(results) == 1
-    r = results[0]
-    assert r.x >= 0 and r.y >= 0
-    assert r.x + r.w <= 800 and r.y + r.h <= 600
-    ov.close()
+def test_release_after_cancel_is_none():
+    m = SelectionModel("3:2", SW, SH)
+    m.press(100, 100)
+    m.move(400, 500)
+    m.cancel()
+    assert m.region is None
+    assert m.release() is None
 
 
-def test_escape_cancels(qapp):
-    ov = RegionOverlay("16:9")
-    ov.open()
-    cancelled = []
-    ov.cancelled.connect(lambda: cancelled.append(True))
-    ov.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key_Escape, Qt.NoModifier))
-    assert cancelled == [True]
-    ov.close()
+def test_release_without_move_is_none():
+    m = SelectionModel("16:9", SW, SH)
+    m.press(100, 100)
+    assert m.release() is None
+
+
+def test_state_resets_after_release():
+    m = SelectionModel("16:9", SW, SH)
+    m.press(100, 100)
+    m.move(1100, 200)
+    m.release()
+    assert m.dragging is False
+    assert m.region is None
+
+
+def test_clamped_to_screen():
+    m = SelectionModel("16:9", SW, SH)
+    m.press(3400, 1400)
+    m.move(100, 100)
+    r = m.release()
+    assert r is not None
+    assert 0 <= r.x and 0 <= r.y
+    assert r.x + r.w <= SW
+    assert r.y + r.h <= SH
+
+
+def test_tiny_drag_hits_min_size():
+    m = SelectionModel("16:9", SW, SH)
+    m.press(500, 500)
+    m.move(503, 502)
+    r = m.release()
+    assert r is not None
+    assert min(r.w, r.h) >= MIN_SHORT_SIDE
+
+
+def test_change_aspect_mid_idle():
+    m = SelectionModel("16:9", SW, SH)
+    m.set_aspect("3:2")
+    m.press(0, 0)
+    m.move(300, 200)
+    r = m.release()
+    assert r is not None
+    assert abs(r.w / r.h - 3 / 2) < 0.01
