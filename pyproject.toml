@@ -1,0 +1,9 @@
+[project]
+name = "screen-recorder"
+version = "0.1.0"
+description = "Ubuntu X11 region screen recorder (PySide6 + ffmpeg)"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

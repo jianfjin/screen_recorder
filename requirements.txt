@@ -1,0 +1,5 @@
+PySide6>=6.6
+# System dependencies (not installable via pip):
+#   - ffmpeg built with libx264, aac, and pulse support
+#   - a PipeWire / PulseAudio default monitor source (pipewire-pulse)
+#   - an X11 (Xorg) session
