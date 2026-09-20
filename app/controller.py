@@ -30,6 +30,8 @@ class RecordingController(QObject):
 
     state_changed = Signal(str)
     region_ready = Signal(object)
+    region_changed = Signal(object)
+    region_edit_blocked = Signal()
     region_invalidated = Signal()
     audio_missing = Signal()
     recording_stopped = Signal(str)
@@ -81,8 +83,32 @@ class RecordingController(QObject):
             if self._state != State.RECORDING:
                 self.region_invalidated.emit()
 
+    @property
+    def region(self):
+        """The region of record, or None when nothing is selected."""
+        return self._region
+
     def set_region(self, region) -> None:
+        """Kept for callers/tests; delegates so every write uses one gate."""
+        self.update_region(region)
+
+    def update_region(self, region) -> None:
+        """The single public entry point for changing the selected region (KTD5).
+
+        While recording the capture rectangle is frozen -- x11grab cannot move
+        it (KTD4) -- so an edit is refused here and only here, and the frame is
+        told to hint rather than silently ignoring the drag.
+        """
+        if self._state == State.RECORDING:
+            self.region_edit_blocked.emit()
+            return
+        self._write_region(region)
+
+    def _write_region(self, region) -> None:
+        if region == self._region:
+            return
         self._region = region
+        self.region_changed.emit(region)
 
     def set_save_dir(self, directory: str | Path | None) -> None:
         """Set the output directory (R3). None restores the default (~/Videos)."""
@@ -109,8 +135,8 @@ class RecordingController(QObject):
             self._set_state(State.IDLE)
 
     def selection_finished(self, region) -> None:
-        self._region = region
         self._set_state(State.IDLE)
+        self._write_region(region)      # one write path, per KTD5
         self.region_ready.emit(region)
 
     def start_recording(self) -> None:

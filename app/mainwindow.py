@@ -10,6 +10,7 @@ from pathlib import Path
 from PySide6.QtCore import QElapsedTimer, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
 from .aspect import ASPECTS
 from .controller import RecordingController, State
 from .formatting import format_duration
+from .frame import RegionFrame
 from .overlay import RegionOverlay
 
 
@@ -34,6 +36,8 @@ class MainWindow(QMainWindow):
         self.setFixedSize(600, 190)
 
         self._overlay = None
+        screen = QApplication.primaryScreen().geometry()
+        self._frame = RegionFrame(screen.width(), screen.height())
         self._controller = controller or RecordingController.from_defaults(parent=self)
 
         central = QWidget(self)
@@ -87,6 +91,9 @@ class MainWindow(QMainWindow):
         self._controller.state_changed.connect(self._on_state_changed)
         self._controller.region_ready.connect(self._on_region_ready)
         self._controller.region_invalidated.connect(self._on_region_invalidated)
+        self._controller.region_changed.connect(self._on_region_changed)
+        self._controller.region_edit_blocked.connect(self._on_region_edit_blocked)
+        self._frame.region_edited.connect(self._on_region_edited)
         self._controller.audio_missing.connect(self._on_audio_missing)
         self._controller.recording_stopped.connect(self._on_stopped)
         self._controller.error.connect(self._on_error)
@@ -113,6 +120,7 @@ class MainWindow(QMainWindow):
         self._record_btn.setEnabled(not recording)
         self._stop_btn.setEnabled(recording)
         if recording:
+            self.raise_()   # the frame band must never bury Record/Stop (R2)
             self._elapsed.start()
             self._time_label.setText(format_duration(0))
             self._timer.start()
@@ -122,6 +130,8 @@ class MainWindow(QMainWindow):
         else:
             self._timer.stop()
             self._time_label.setText("00:00")
+        self._aspect_box.setEnabled(not recording)
+        self._sync_frame()
 
     def _tick(self) -> None:
         self._time_label.setText(format_duration(self._elapsed.elapsed() / 1000.0))
@@ -142,15 +152,47 @@ class MainWindow(QMainWindow):
             path if path else str(self._default_save_dir())
         )
 
+    def _sync_frame(self) -> None:
+        """Show, hide, or lock the frame from the controller's state (KTD5).
+
+        Derived here and nowhere else, including on every state change, so a
+        region the controller no longer holds can never leave a stale frame on
+        the desktop.
+        """
+        recording = self._controller.state is State.RECORDING
+        region = self._controller.region
+        if region is None:
+            self._frame.clear()
+            return
+        if self._controller.state is State.SELECTING:
+            self._frame.clear()     # the modal selector draws the region
+            return
+        self._frame.show_for(region, self._aspect_box.currentText())
+        self._frame.set_locked(recording)
+
     def _on_region_ready(self, region) -> None:
         self._record_btn.setEnabled(True)
-        self._status.setText(
-            f"Region {region.w}x{region.h} at ({region.x}, {region.y}) ready — press Record."
-        )
+        self._status.setText(self._region_summary(region))
+        self._sync_frame()
+
+    def _region_summary(self, region) -> str:
+        return f"Region {region.w}x{region.h} at ({region.x}, {region.y}) ready — press Record."
+
+    def _on_region_changed(self, region) -> None:
+        self._sync_frame()
+        self._status.setText(self._region_summary(region))
+
+    def _on_region_edited(self, region) -> None:
+        # A settled frame drag. The controller decides whether it lands.
+        self._controller.update_region(region)
+
+    def _on_region_edit_blocked(self) -> None:
+        self._status.setText("Stop the recording before changing the region.")
 
     def _on_region_invalidated(self) -> None:
         self._record_btn.setEnabled(False)
         self._status.setText("Aspect changed — please select a region again.")
+        self._frame.clear()
 
     def _on_audio_missing(self) -> None:
         answer = QMessageBox.question(
@@ -168,6 +210,11 @@ class MainWindow(QMainWindow):
         self._status.setText(f"Saved: {path}")
         self._controller.reset()
         self._record_btn.setEnabled(True)
+
+    def closeEvent(self, event) -> None:
+        self._frame.clear()   # unparented top-level: hide it explicitly
+        self._frame.deleteLater()
+        super().closeEvent(event)
 
     def _on_error(self, message: str) -> None:
         self._status.setText(message)
