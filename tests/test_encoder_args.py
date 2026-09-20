@@ -38,8 +38,26 @@ def test_no_audio_omits_pulse_and_aac():
 
 def test_region_maps_to_geometry_and_size():
     a = _a(Region(5, 8, 800, 450), "16:9", display=":0")
-    assert ":0.0+5+8" in a
+    assert ":0.0" in a
     assert "800x450" in a
+    assert a[a.index("-grab_x") + 1] == "5"
+    assert a[a.index("-grab_y") + 1] == "8"
+
+
+def test_grab_offset_never_travels_in_the_filename():
+    """Regression: "+X+Y" is mis-parsed as X with a comma-separated Y.
+
+    ffmpeg read the x offset and silently left y at 0, so a region below the
+    top of the screen recorded the wrong strip of the desktop. The offsets must
+    be options, and the input must stay a bare ":display.screen".
+    """
+    a = _a(Region(1200, 400, 1280, 720), "16:9", display=":1")
+    assert a[a.index("-i") + 1] == ":1.0", "no offset suffix in the input literal"
+    assert not any(tok.startswith(":") and "+" in tok for tok in a), a
+    assert a[a.index("-grab_x") + 1] == "1200"
+    assert a[a.index("-grab_y") + 1] == "400"
+    # -grab_y is not the global overwrite flag; keep both distinguishable.
+    assert a.count("-y") == 1 and a[-2] == "-y"
 
 
 def test_unsupported_aspect_raises():

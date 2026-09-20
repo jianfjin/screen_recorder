@@ -60,7 +60,13 @@ def build_args(region: Region, aspect: str, out_path: str | os.PathLike,
         "-draw_mouse", "0",
         "-framerate", str(DEFAULT_FPS),          # KTD7
         "-video_size", f"{cap_w}x{cap_h}",
-        "-i", f"{display}.0+{region.x}+{region.y}",
+        # The grab offset goes in as options, not in the filename: x11grab
+        # parses "+X+Y" as X then a comma-separated Y, so the second "+" leaves
+        # the vertical offset at 0 and every recording comes from the top of the
+        # screen. Verified against the live X server (U4 frame check).
+        "-grab_x", str(region.x),
+        "-grab_y", str(region.y),
+        "-i", f"{display}.0",
     ]
     if with_audio:
         # System audio via the Pulse/PipeWire default monitor (KTD4).
