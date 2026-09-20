@@ -18,7 +18,7 @@ from PySide6.QtWidgets import QApplication
 
 from app.aspect import Region
 from app.controller import RecordingController, State
-from app.frame import RegionFrame
+from app.frame import RESIZE, RegionFrame
 
 SCREEN_W, SCREEN_H = 3440, 1440
 R = Region(400, 300, 640, 360)
@@ -72,10 +72,36 @@ def test_pieces_surround_the_region_on_all_four_sides(frame):
     frame.show_for(R, "16:9")
     rects = frame.piece_rects()
     assert frame.is_visible()
-    assert rects["top"] == (R.x, R.y - frame.BAND, R.w, frame.BAND)
-    assert rects["bottom"] == (R.x, R.y + R.h, R.w, frame.BAND)
+    assert rects["top"] == (R.x - frame.BAND, R.y - frame.BAND, R.w + 2 * frame.BAND, frame.BAND)
+    assert rects["bottom"] == (R.x - frame.BAND, R.y + R.h, R.w + 2 * frame.BAND, frame.BAND)
     assert rects["left"] == (R.x - frame.BAND, R.y, frame.BAND, R.h)
     assert rects["right"] == (R.x + R.w, R.y, frame.BAND, R.h)
+
+
+def test_the_corner_itself_is_grabbable_and_resizes(frame):
+    """The square diagonally outside each corner must be a handle, not a gap.
+
+    It is the spot a pointer is on when a user means "resize from this corner";
+    if no window covers it the press falls through to whatever is being recorded
+    and nothing happens (R6)."""
+    frame.show_for(R, "16:9")
+    right, bottom = R.x + R.w, R.y + R.h
+    corners = {"tl": (R.x - frame.BAND // 2, R.y - frame.BAND // 2),
+               "tr": (right + frame.BAND // 2, R.y - frame.BAND // 2),
+               "bl": (R.x - frame.BAND // 2, bottom + frame.BAND // 2),
+               "br": (right + frame.BAND // 2, bottom + frame.BAND // 2)}
+    for corner, (x, y) in corners.items():
+        assert any(_contains(rect, (x, y)) for rect in frame.piece_rects().values() if rect), \
+            f"no piece covers the {corner} corner square"
+        kind, resolved = frame._model.probe(x, y)
+        assert kind == RESIZE and resolved == corner, (kind, resolved)
+
+
+def test_the_regions_own_corner_pixel_still_belongs_to_the_desktop(frame):
+    """The handle reaches diagonally outside only: the region's first pixel is
+    still not covered, so a click meant for the app underneath lands on it."""
+    frame.show_for(R, "16:9")
+    assert all(not _contains(rect, (R.x, R.y)) for rect in frame.piece_rects().values() if rect)
 
 
 def test_no_piece_covers_any_pixel_of_the_recorded_area(frame):
@@ -113,9 +139,9 @@ def test_pieces_paint_only_their_own_band(frame):
     # render each piece into an image and check the pixels it produces.
     frame.show_for(R, "16:9")
     top = frame._pieces["top"].grab().toImage()
-    assert (top.width(), top.height()) == (R.w, frame.BAND)
+    assert (top.width(), top.height()) == (R.w + 2 * frame.BAND, frame.BAND)
     idle = QColor(frame.IDLE_COLOR)
-    painted = top.pixelColor(R.w // 2, 0)
+    painted = top.pixelColor(top.width() // 2, 0)
     assert abs(painted.red() - idle.red()) < 40 and abs(painted.blue() - idle.blue()) < 40, (
         f"strip painted {painted.name()}, expected the idle colour {idle.name()}")
     frame.set_locked(True)
@@ -343,7 +369,41 @@ def test_the_refused_drag_is_reverted_on_screen(qapp):
     c.start_recording()
     moved = drag_a_strip(win)
     assert moved is not None                      # the frame computed a candidate
-    assert win._frame._pieces["top"].geometry().getRect() == (R.x, R.y - win._frame.BAND, R.w, win._frame.BAND)
+    band = win._frame.BAND
+    assert win._frame._pieces["top"].geometry().getRect() == (
+        R.x - band, R.y - band, R.w + 2 * band, band)
+
+
+def _piece_boxes(frame):
+    return {role: piece.geometry().getRect() for role, piece in frame._pieces.items()}
+
+
+def test_a_locked_drag_keeps_every_band_off_the_captured_pixels(qapp):
+    """The bands must stay off the captured pixels *while* the drag is in progress.
+
+    ffmpeg is grabbing exactly that area, so one displaced frame is one encoded
+    frame in the finished MP4 (R2, AE2, KTD2) -- ending up back on the region
+    after the refusal is not enough. Caught on the live display, where a refused
+    drag during recording put the frame's own bands into the recording.
+    """
+    win, c, _ = make_window()
+    c.set_region(R)
+    win._sync_frame()
+    c.start_recording()
+    resting = _piece_boxes(win._frame)
+    grab_point = (R.x + R.w // 2, R.y - 1)        # inner edge of the top band
+    win._frame.begin_drag(*grab_point)
+    for step in range(1, 6):
+        win._frame.update_drag(grab_point[0] + 40 * step, grab_point[1] + 30 * step)
+        assert _piece_boxes(win._frame) == resting, (
+            f"a band slid across the live capture at drag step {step}")
+    win._frame.end_drag(grab_point[0] + 200, grab_point[1] + 150)
+    assert _piece_boxes(win._frame) == resting, (
+        "releasing a refused drag must not park the bands inside the captured area")
+    region_box = QRect(R.x, R.y, R.w, R.h)
+    for role, box in resting.items():
+        assert QRect(*box).intersected(region_box).isEmpty(), (
+            f"at rest, {role} already covers recorded pixels")
 
 
 def test_recording_style_toggles_with_state(qapp):

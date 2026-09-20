@@ -142,12 +142,17 @@ def band_window_rects(region: Region, band: int, tab: "tuple[int, int]") -> dict
     (x, y, w, h) per piece. A side with no room (flush with the screen edge, or
     a tab that would run off screen) gets None, so that side simply draws and
     claims nothing rather than stepping into the recorded area.
+
+    The horizontal bands run one band-width past the sides, so the small square
+    diagonally outside each corner belongs to *some* piece. Without that the
+    corner -- the one spot a user aims at to resize -- would be a dead gap
+    between two bands, and the press would fall through to the desktop (R6).
     """
     x, y, w, h = region.x, region.y, region.w, region.h
     tx, ty = tab
     return {
-        "top": (x, y - band, w, band),
-        "bottom": (x, y + h, w, band),
+        "top": (x - band, y - band, w + 2 * band, band),
+        "bottom": (x - band, y + h, w + 2 * band, band),
         "left": (x - band, y, band, h),
         "right": (x + w, y, band, h),
         "tab": (x, y - band - ty, min(max(w, tx), tx), ty),
@@ -365,6 +370,14 @@ class RegionFrame(QObject):
     def update_drag(self, x: int, y: int) -> None:
         if self._model is None or not self._dragging:
             return
+        if self._locked:
+            # While recording, the bands must not travel across the captured area
+            # even for a moment: x11grab is reading exactly those pixels, so a
+            # preview that moves gets encoded into the file (R2, AE2). This gates
+            # *display* only -- the release below still solves the geometry and
+            # still hands the result to the controller, which is the one place
+            # allowed to refuse an edit (KTD4).
+            return
         self._model.move(x, y)
         self._layout()
 
@@ -373,7 +386,12 @@ class RegionFrame(QObject):
             return None
         settled = self._model.release(x, y)
         self._dragging = False
-        self._layout()
+        if not self._locked:
+            self._layout()
+        # Locked: no restack either, for the same reason -- the pieces are already
+        # on the region that is being captured, and the controller's refusal will
+        # re-sync them a moment later. Laying out here would park a band inside
+        # the live capture for the frames ffmpeg grabs in between.
         if settled is not None:
             self.region_edited.emit(settled)
         return settled

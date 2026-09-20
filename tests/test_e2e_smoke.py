@@ -112,7 +112,7 @@ def _read_raw(path: Path, width: int, height: int) -> bytes:
     return data
 
 
-def _run_frame_host(tmp_path, region: Region, tag: str) -> dict:
+def _run_frame_host(tmp_path, region: Region, tag: str, drag=None) -> dict:
     """Show the real windows on the live display, record, and collect the output."""
     art = tmp_path / f"host_{tag}"
     video = art / "capture.mp4"
@@ -120,7 +120,8 @@ def _run_frame_host(tmp_path, region: Region, tag: str) -> dict:
         [sys.executable, "-m", "tests.e2e_frame_host",
          "--region", f"{region.x},{region.y},{region.w},{region.h}",
          "--out", str(video), "--art-dir", str(art),
-         "--display", os.environ["DISPLAY"]],
+         "--display", os.environ["DISPLAY"]]
+        + (["--drag-while-recording", f"{drag[0]},{drag[1]}"] if drag else []),
         cwd=str(REPO_ROOT),
         env={**os.environ, "QT_QPA_PLATFORM": "xcb"},
         capture_output=True, text=True, timeout=180,
@@ -135,8 +136,8 @@ def _run_frame_host(tmp_path, region: Region, tag: str) -> dict:
     return manifest
 
 
-def _assert_frame_never_enters_the_capture(tmp_path, region: Region, tag: str):
-    manifest = _run_frame_host(tmp_path, region, tag)
+def _assert_frame_never_enters_the_capture(tmp_path, region: Region, tag: str, drag=None):
+    manifest = _run_frame_host(tmp_path, region, tag, drag=drag)
     screen_w, screen_h = manifest["screen"]
     gray = manifest["gray"]
     band = manifest["band"]
@@ -193,47 +194,62 @@ def _assert_frame_never_enters_the_capture(tmp_path, region: Region, tag: str):
     #    desktop cannot pass for a clean one.
     video = manifest["video"]
     assert video.exists() and video.stat().st_size > 0, "the recording produced no MP4"
-    frame_raw = tmp_path / f"frame_{tag}.raw"
-    subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", "1.0", "-i", str(video),
-         "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "-y", str(frame_raw)],
-        check=True, timeout=60,
-    )
     stream = [s for s in _ffprobe_streams(video) if s.get("codec_type") == "video"][0]
     vw, vh = stream["width"], stream["height"]
-    data = _read_raw(frame_raw, vw, vh)
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json",
+         str(video)], capture_output=True, text=True, check=True)
+    seconds = float(json.loads(probe.stdout)["format"]["duration"])
+    # Several moments, not one: a band that only strays across the captured area
+    # for a third of a second, mid-gesture, is still in the file.
+    times = [round(seconds * f, 2) for f in (0.15, 0.3, 0.45, 0.6, 0.7, 0.8, 0.9)]
+    frame_raw = tmp_path / f"frame_{tag}.raw"
     inset = max(2, round((band + 2) * vw / region.w))
     offenders, sampled, canvas_pixels = [], 0, 0
 
-    def scan(x, y):
+    def scan(data, at, x, y):
         nonlocal sampled, canvas_pixels
         p = _pixel(data, vw, x, y)
         sampled += 1
         if is_frame(p):
-            offenders.append((x, y, p))
+            offenders.append((at, x, y, p))
         elif is_canvas(p):
             canvas_pixels += 1
 
+    rows = []
     for y in range(vh):
         at_edge_row = y < inset or y >= vh - inset
         if at_edge_row:
-            xs = range(0, vw, 2)
+            rows.append((y, range(0, vw, 2)))
         elif y % 16 == 0:
-            xs = (list(range(inset)) + list(range(inset, vw - inset, 16))
-                  + list(range(vw - inset, vw)))
-        else:
-            continue
-        for x in xs:
-            scan(x, y)
+            rows.append((y, list(range(inset)) + list(range(inset, vw - inset, 16))
+                         + list(range(vw - inset, vw))))
+    for at in times:
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", str(at), "-i", str(video),
+             "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "-y", str(frame_raw)],
+            check=True, timeout=60,
+        )
+        data = _read_raw(frame_raw, vw, vh)
+        for y, xs in rows:
+            for x in xs:
+                scan(data, at, x, y)
 
     assert not offenders, (
-        f"{len(offenders)} recorded pixels carry the frame's own colours, e.g. "
-        f"{offenders[:5]} -- the frame is being captured (violates KTD2/AE4)")
+        f"{len(offenders)} recorded pixels carry the frame's own colours, as "
+        f"(t, x, y, rgb) e.g. {offenders[:5]} -- the frame is being captured "
+        f"(violates KTD2/AE4)")
     ratio = canvas_pixels / sampled
     assert ratio > 0.95, (
         f"only {canvas_pixels}/{sampled} sampled pixels ({ratio:.0%}) are the "
         f"canvas grey: the recording is not showing the selected region, so a "
         f"'no frame pixels' result would be vacuous")
+
+    if drag:
+        log = manifest.get("drag")
+        assert log, "the host reported no refused drag, so this checked nothing"
+        assert log["before"] == log["after"] == [region.x, region.y, region.w, region.h], (
+            f"the refused gesture moved the region anyway: {log}")
 
 
 def test_e2e_frame_pixels_absent_flush_region(tmp_path):
@@ -258,3 +274,16 @@ def test_e2e_frame_pixels_absent_interior_region(tmp_path):
     if not _has_env():
         pytest.skip("real capture e2e needs RUN_E2E=1, ffmpeg, and an X DISPLAY")
     _assert_frame_never_enters_the_capture(tmp_path, Region(1200, 400, 1280, 720), "interior")
+
+
+def test_e2e_frame_pixels_absent_while_a_drag_is_refused(tmp_path):
+    """A drag attempted *during* recording must leave no trace in the file.
+
+    Locking the region is not only about the end state: the bands must never
+    travel across the captured area, not even between the press and the
+    controller's refusal, because ffmpeg is sampling that area the whole time.
+    """
+    if not _has_env():
+        pytest.skip("real capture e2e needs RUN_E2E=1, ffmpeg, and an X DISPLAY")
+    _assert_frame_never_enters_the_capture(
+        tmp_path, Region(1000, 300, 1280, 720), "refused_drag", drag=(150, 90))

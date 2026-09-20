@@ -27,7 +27,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from PySide6.QtCore import Qt, QTimer                        # noqa: E402
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtTest import QTest                        # noqa: E402
 from PySide6.QtGui import QColor, QPainter                   # noqa: E402
 from PySide6.QtWidgets import QApplication, QWidget          # noqa: E402
 
@@ -44,6 +45,10 @@ START_MS = 1300
 RECORDING_GRAB_MS = 2000
 STOP_MS = 4400
 QUIT_MS = 5100
+
+
+def _as_list(region):
+    return [region.x, region.y, region.w, region.h]
 
 
 class _Canvas(QWidget):
@@ -107,6 +112,9 @@ def main(argv=None) -> int:
     ap.add_argument("--out", required=True, help="where to write the MP4")
     ap.add_argument("--art-dir", required=True, help="where to write the grabs")
     ap.add_argument("--display", default=os.environ.get("DISPLAY", ":0"))
+    ap.add_argument("--drag-while-recording", default="",
+                    help="dx,dy to attempt mid-recording, a gesture the "
+                         "controller is supposed to refuse")
     args = ap.parse_args(argv)
 
     x, y, w, h = (int(v) for v in args.region.split(","))
@@ -126,6 +134,10 @@ def main(argv=None) -> int:
         print(f"display {screen.width()}x{screen.height()} has no room for region "
               f"{x},{y},{w},{h} plus its frame bands", file=sys.stderr)
         return 2
+
+    offsets = ([int(v) for v in args.drag_while_recording.split(",")]
+               if args.drag_while_recording else None)
+    drag_log = {}
 
     canvas = _Canvas(region)
     canvas.show()
@@ -173,6 +185,31 @@ def main(argv=None) -> int:
 
     bailed = []
 
+    def attempt_drag():
+        """Refused-by-design gesture straight across the live capture, in steps.
+
+        The transient positions are the point: x11grab samples at 30fps, so if
+        the bands ever travel over the captured area, the finished file shows it.
+        Driving the frame's drag seam is the same call sequence a real press on a
+        band makes; routing the physical pointer is the manual row of the plan.
+        """
+        frame = window._frame
+        before = frame.region()
+        x0, y0 = before.x + before.w // 2, before.y - 1
+        frame.begin_drag(x0, y0)
+        for step in range(1, 9):
+            frame.update_drag(x0 + offsets[0] * step // 8, y0 + offsets[1] * step // 8)
+            # Real pacing: a hand drags for a quarter of a second, and x11grab
+            # samples every 33ms. Blinking through the steps in a millisecond
+            # would let a displaced band dodge the capture entirely, and the
+            # check would pass without proving anything.
+            QTest.qWait(45)
+        frame.end_drag(x0 + offsets[0], y0 + offsets[1])
+        QTest.qWait(120)
+        after = frame.region()
+        drag_log.update(before=_as_list(before), after=_as_list(after),
+                        dx=offsets[0], dy=offsets[1])
+
     def fail(message: str) -> None:
         print(message, file=sys.stderr)
         bailed.append(message)
@@ -182,6 +219,8 @@ def main(argv=None) -> int:
     QTimer.singleShot(IDLE_GRAB_MS, lambda: grab(idle_grab))
     QTimer.singleShot(START_MS, controller.start_recording)
     QTimer.singleShot(RECORDING_GRAB_MS, lambda: grab(recording_grab))
+    if offsets:
+        QTimer.singleShot(RECORDING_GRAB_MS + 500, attempt_drag)
     QTimer.singleShot(STOP_MS, controller.stop_recording)
     QTimer.singleShot(QUIT_MS, app.quit)
     app.exec()
@@ -200,6 +239,7 @@ def main(argv=None) -> int:
         "band": RegionFrame.BAND,
         "video": str(out),
         "grabs": {"idle": str(idle_grab), "recording": str(recording_grab)},
+        "drag": drag_log,
     }))
     return 0
 
