@@ -326,7 +326,25 @@ U1（纯几何与模型）是 U2/U3 的前提；U2（常驻窗口 + 接线）与
   现改为 `-grab_x`/`-grab_y` 显式选项 + 裸 `:display.screen` 输入，
   由 `tests/test_encoder_args.py::test_grab_offset_never_travels_in_the_filename`
   锁住，并由 `tests/test_e2e_smoke.py` 的两条抽帧用例在真机上验证。
+- **真人指针的机器验证补做了，并揪出两处「离屏全绿、真机不成立」的缺陷。** 用 XTEST
+  注入真实按下/移动/松开（脚本在仓库外，python-xlib 不是本项目的依赖）跑一遍 F1/F3：
+  24 项断言逐条成立 —— 选框常驻、拖边条平移、拖角缩放（锚点不漂移、比例锁死）、
+  录制中显示且拖不动、停止后恢复可拖。其中两条当场暴露问题：
+  * **角部正对着屏幕外的那一小块（BAND×BAND）原本不属于任何窗口**，鼠标按在
+    几何角点上会穿到桌面底下，缩放毫无反应（R6 的「按住角部手柄」落空）。
+    `band_window_rects` 里上下两条边带改为左右各外扩一个 BAND，把四个角方块盖住；
+    区域第一个像素仍然不属于本应用（R3 不破）。
+  * **录制中那次被拒的拖动，边带会先跟手扫过被抓取的区域再被 `sync_to` 拉回**，
+    而 x11grab 一直在按 30fps 采样，于是这些帧被永久编进 MP4（实测同一路径下
+    成片里能数出几千个红像素，`-ss 1.0` 这类单帧抽查恰好落在动作之外，看不出来）。
+    现在 `locked` 期间 `update_drag`/`end_drag` 不再搬动窗口：只按 KTD4 在松开时照常
+    把候选区域交给 controller 拒收与提示，屏幕上的框自始至终停在被录的那块。
+    `tests/test_mainwindow_frame.py::test_a_locked_drag_keeps_every_band_off_the_captured_pixels`
+    钉住离屏这一面，`tests/test_e2e_smoke.py::test_e2e_frame_pixels_absent_while_a_drag_is_refused`
+    逐帧扫成片钉住真机这一面（去掉修复后两条都会红）。
 - **Verification Contract 里「穿透与叠放」「交互手感」两行仍需真人上手**：
-  X 服务端的路由与拖动手感无法在离屏单测或抽帧断言里证明，本仓库不做自动化冒充。
+  X 服务端的路由已用注入指针在真机跑通（见上一条），剩下的只是叠放与手感：
+  本机 mutter 会话实测 override-redirect + StaysOnTop 的边带盖在最大化的终端之上
+  （计划 Assumptions 第 2 条的疑虑可以关掉），拖动手感仍请真人评判。
   抽帧用例自带反真空前提（边框必须真的画在屏幕对应位置，否则先失败），
   因此它通过 = 边框确实在屏幕上、且录出的像素里没有边框。
