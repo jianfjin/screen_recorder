@@ -304,3 +304,29 @@ U1（纯几何与模型）是 U2/U3 的前提；U2（常驻窗口 + 接线）与
 - **U2:** 常驻框在 idle/done 显示、SELECTING 隐藏、region_invalidated 消失、RECORDING 只读；中间穿透与边带可拖在真机成立；`update_region` 不改状态机，`set_region` 已并轨到同一条闸门。
 - **U3:** 录制中拖框被拒且有提示，Stop 后可拖；录制样式与空闲样式随状态切换。
 - **U4:** 抽帧断言进入 e2e 并通过；文档更新完成。
+
+---
+
+## Implementation Notes (实现期结论与偏离)
+
+按 U1→U4 落地后与本文档的出入，全部有代码/测试为证：
+
+- **KTD1 的机制换成了「5 个实心矩形」，不是单个环形 mask 窗口。** `app/frame.py`
+  实际由 top/bottom/left/right 四条边带 + 一个标签页组成。原因：本机 Qt 的
+  `setMask` 只改 XCB 的 BOUNDING shape，INPUT 区域仍是整矩形，结果区域内侧的点击被
+  常驻框吃掉（R3 不成立）。改成「区域上方根本不存在窗口」的矩形拼法后，
+  R2（不进画面）与 R3（穿透）都由构造保证，并被
+  `tests/test_mainwindow_frame.py::test_no_piece_covers_any_pixel_of_the_recorded_area`
+  与 U4 的抽帧检查分别把住离屏与真机两道关。KTD2 的硬不变式不变。
+- **`app/encoder.py` 破例改了一处，且必须改。** U4 的抽帧断言在贴边用例里通过、在
+  `Region(1200, 400, …)` 用例里暴露出：x11grab 的 `-i <display>.0+X+Y` 字面里，
+  第一个 `+` 之后的 `+Y` 不被解析，y 偏移静默留在 0（实测同一时刻的整屏抓取与
+  `+X,Y` / `-grab_x` `-grab_y` 两种写法互为对照）。也就是说常驻框显示的区域与真正
+  被录下来的区域在 y 上分家，直接否掉「框在哪 = 录在哪」这条 Success Criterion。
+  现改为 `-grab_x`/`-grab_y` 显式选项 + 裸 `:display.screen` 输入，
+  由 `tests/test_encoder_args.py::test_grab_offset_never_travels_in_the_filename`
+  锁住，并由 `tests/test_e2e_smoke.py` 的两条抽帧用例在真机上验证。
+- **Verification Contract 里「穿透与叠放」「交互手感」两行仍需真人上手**：
+  X 服务端的路由与拖动手感无法在离屏单测或抽帧断言里证明，本仓库不做自动化冒充。
+  抽帧用例自带反真空前提（边框必须真的画在屏幕对应位置，否则先失败），
+  因此它通过 = 边框确实在屏幕上、且录出的像素里没有边框。
