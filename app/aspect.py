@@ -86,3 +86,55 @@ def snap_to_ratio(x0, y0, x1, y1, aspect, screen_w, screen_h):
     x = _clamp(x, 0, screen_w - w)
     y = _clamp(y, 0, screen_h - h)
     return Region(x, y, w, h)
+
+def move_region(region, dx, dy, screen_w, screen_h):
+    """Translate `region` by (dx, dy), keeping its size and staying on screen.
+
+    Used by the persistent frame's border drag: the offset is taken from the
+    press point, so grabbing the band anywhere moves the frame by how far the
+    pointer travelled rather than teleporting it under the cursor.
+    """
+    x = _clamp(region.x + dx, 0, max(0, screen_w - region.w))
+    y = _clamp(region.y + dy, 0, max(0, screen_h - region.h))
+    return Region(x, y, region.w, region.h)
+
+
+# corner key -> (anchor corner key, x direction from anchor, y direction)
+_CORNERS = ("tl", "tr", "bl", "br")
+
+
+def _anchor_corner(region, corner):
+    """The corner opposite the one being dragged, as (x, y, sign_x, sign_y).
+
+    `sign_*` is the direction the rectangle grows from the anchor, so the
+    resize math can always run in a positive anchor-relative space.
+    """
+    right, bottom = region.x + region.w, region.y + region.h
+    return {
+        "br": (region.x, region.y, 1, 1),
+        "bl": (right, region.y, -1, 1),
+        "tr": (region.x, bottom, 1, -1),
+        "tl": (right, bottom, -1, -1),
+    }[corner]
+
+
+def resize_region_to_ratio(region, corner, x, y, aspect, screen_w, screen_h):
+    """Resize `region` by dragging `corner` to (x, y), locked to `aspect`.
+
+    The opposite corner is the anchor and is returned exactly where it was.
+    `snap_to_ratio` does the ratio solve, the minimum size, and the shrink to
+    fit, but it clamps *position* against the whole screen -- so it is called
+    here in anchor-relative space with the space that remains from the anchor.
+    Handing it absolute coordinates instead makes the anchor slide (from
+    (1000, 900) on a 3440x1440 screen it returns y=90), turning a resize into a
+    move.
+    """
+    ax, ay, sx, sy = _anchor_corner(region, corner)
+    avail_w = max(1, (screen_w - ax) if sx > 0 else ax)
+    avail_h = max(1, (screen_h - ay) if sy > 0 else ay)
+    px = _clamp(sx * (x - ax), 1, avail_w)
+    py = _clamp(sy * (y - ay), 1, avail_h)
+    rel = snap_to_ratio(0, 0, px, py, aspect, avail_w, avail_h)
+    rx = ax + rel.x if sx > 0 else ax - rel.x - rel.w
+    ry = ay + rel.y if sy > 0 else ay - rel.y - rel.h
+    return Region(rx, ry, rel.w, rel.h)
