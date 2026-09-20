@@ -120,7 +120,6 @@ class MainWindow(QMainWindow):
         self._record_btn.setEnabled(not recording)
         self._stop_btn.setEnabled(recording)
         if recording:
-            self.raise_()   # the frame band must never bury Record/Stop (R2)
             self._elapsed.start()
             self._time_label.setText(format_duration(0))
             self._timer.start()
@@ -132,6 +131,10 @@ class MainWindow(QMainWindow):
             self._time_label.setText("00:00")
         self._aspect_box.setEnabled(not recording)
         self._sync_frame()
+        if recording:
+            # The frame pieces are override-redirect; keep the controls above
+            # them so a band crossing this window can never bury Record/Stop.
+            self.raise_()
 
     def _tick(self) -> None:
         self._time_label.setText(format_duration(self._elapsed.elapsed() / 1000.0))
@@ -188,6 +191,11 @@ class MainWindow(QMainWindow):
 
     def _on_region_edit_blocked(self) -> None:
         self._status.setText("Stop the recording before changing the region.")
+        # The frame already moved its own pieces; snap them back onto the region
+        # that is actually being captured (R8), without restacking windows.
+        region = self._controller.region
+        if region is not None:
+            self._frame.sync_to(region, self._aspect_box.currentText())
 
     def _on_region_invalidated(self) -> None:
         self._record_btn.setEnabled(False)

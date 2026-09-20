@@ -311,3 +311,82 @@ def test_closing_the_main_window_takes_the_frame_with_it(qapp):
     assert win._frame.is_visible()
     win.close()
     assert not win._frame.is_visible()
+
+
+# -- U3: recording-time lock -------------------------------------------------
+def drag_a_strip(win, dx=150, dy=90):
+    region = win._frame.region()
+    grab_point = (region.x + region.w // 2, region.y - 1)
+    win._frame.begin_drag(*grab_point)
+    win._frame.update_drag(grab_point[0] + dx, grab_point[1] + dy)
+    return win._frame.end_drag(grab_point[0] + dx, grab_point[1] + dy)
+
+
+def test_locked_drag_changes_nothing_and_hints_once(qapp):
+    win, c, _ = make_window()
+    c.set_region(R)
+    win._sync_frame()
+    c.start_recording()
+    hints = []
+    c.region_edit_blocked.connect(lambda: hints.append(1))
+    drag_a_strip(win)
+    assert c.region == R, "the recorded region must not move (R8)"
+    assert win._frame.region() == R, "the frame must not drift off the recorded area"
+    assert len(hints) == 1
+    assert "Stop" in win._status.text()
+
+
+def test_the_refused_drag_is_reverted_on_screen(qapp):
+    win, c, _ = make_window()
+    c.set_region(R)
+    win._sync_frame()
+    c.start_recording()
+    moved = drag_a_strip(win)
+    assert moved is not None                      # the frame computed a candidate
+    assert win._frame._pieces["top"].geometry().getRect() == (R.x, R.y - win._frame.BAND, R.w, win._frame.BAND)
+
+
+def test_recording_style_toggles_with_state(qapp):
+    win, c, _ = make_window()
+    c.set_region(R)
+    win._sync_frame()
+    assert win._frame.locked is False
+    c.start_recording()
+    assert win._frame.locked is True
+    c.stop_recording()
+    c.reset()
+    assert win._frame.locked is False
+
+
+def test_after_stop_the_same_drag_lands(qapp):
+    win, c, _ = make_window()
+    c.set_region(R)
+    win._sync_frame()
+    c.start_recording()
+    drag_a_strip(win)
+    c.stop_recording()
+    c.reset()
+    moved = drag_a_strip(win)
+    assert moved is not None and c.region == moved and win._frame.region() == moved
+
+
+def test_no_region_changed_is_emitted_while_recording(qapp):
+    win, c, _ = make_window()
+    c.set_region(R)
+    win._sync_frame()
+    fired = []
+    c.region_changed.connect(lambda r: fired.append(r))
+    c.start_recording()
+    drag_a_strip(win)
+    assert fired == []
+
+
+def test_the_lock_hint_does_not_disturb_the_elapsed_timer(qapp):
+    win, c, _ = make_window()
+    c.set_region(R)
+    win._sync_frame()
+    c.start_recording()
+    assert win._timer.isActive()
+    drag_a_strip(win)
+    assert win._timer.isActive(), "a refused edit must not stop the recording timer"
+    assert win._time_label.text() == "00:00"

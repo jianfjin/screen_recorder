@@ -252,15 +252,25 @@ class RegionFrame(QObject):
     # -- lifecycle ----------------------------------------------------------
     def show_for(self, region: Region, aspect: str) -> None:
         """Display the frame around `region`, re-seeded with the live aspect."""
-        self._aspect = aspect
-        self._model = RegionFrameModel(region, aspect, self._screen_w, self._screen_h)
-        self._layout()
+        self.sync_to(region, aspect)
         for piece in self._pieces.values():
             if piece.geometry().width() > 0 and piece.geometry().height() > 0:
                 piece.show()
                 piece.raise_()
             else:
                 piece.hide()
+
+    def sync_to(self, region: Region, aspect: str) -> None:
+        """Adopt the authoritative region without restacking.
+
+        Used when the controller refuses an edit (KTD4): the pieces must snap
+        back onto the region that is actually being captured, without disturbing
+        the window stacking that keeps the main window's controls reachable.
+        """
+        self._aspect = aspect
+        self._model = RegionFrameModel(region, aspect, self._screen_w, self._screen_h)
+        self._dragging = False
+        self._layout()
 
     def clear(self) -> None:
         """Nothing to show: no region selected, or invalidated by an aspect change."""
