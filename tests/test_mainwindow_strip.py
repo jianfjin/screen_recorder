@@ -759,3 +759,25 @@ def test_answering_yes_does_not_collapse_a_window_that_was_clear_of_it(
     assert rig.win._collapsed is False, "nothing was in the shot, so nothing moved"
     assert rig.win.isVisible() is True
     assert rig.win._strip.is_visible() is False
+
+
+def test_a_collapse_that_finds_no_recording_is_undone_in_the_same_call(window):
+    """R9's promise, enforced at the seam rather than trusted to the signals.
+
+    The interface moves out of the shot because the grabber is about to read those
+    pixels. If the start returns without a recording -- and without erroring,
+    which is what any future silent exit in the controller would look like -- the
+    desktop is left holding a strip whose stop button is deliberately disabled
+    until something is being captured. That is the live failure the user hit: no
+    way to stop, no window to click, nothing else on the screen.
+    """
+    rig = window()
+    rig.controller.start_recording = lambda: None      # returns, records nothing
+
+    rig.win._start_recording()
+
+    assert rig.controller.state is not State.RECORDING
+    assert rig.win._collapsed is False, (
+        "a collapsed interface with no recording is a dead end, not a state")
+    assert rig.win.isVisible() is True
+    assert rig.win._strip.is_visible() is False

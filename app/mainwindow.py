@@ -137,6 +137,14 @@ class MainWindow(QMainWindow):
         """
         self._collapse_if_covering_region()
         self._controller.start_recording()
+        if self._collapsed and self._controller.state is not State.RECORDING:
+            # The interface moved for a capture that is not happening. Undo
+            # it here, in the same call, whatever the reason the start returned
+            # without recording -- the rollback hooked to error and audio_missing
+            # covers the paths the controller announces, and this covers the
+            # ones it does not. R9: never a desktop whose only control cannot
+            # be used.
+            self._restore_from_recording()
 
     def _stop_recording(self) -> None:
         """The one stop path (R10).
