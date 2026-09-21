@@ -1,14 +1,20 @@
-"""The recording control strip's geometry and constants (pure, no Qt).
+"""The recording control strip: where it goes, and the window that goes there.
+
+The geometry half is pure and touches no Qt, which is what lets it be
+exhausted in `tests/test_strip_model.py`; the widget half at the bottom is one
+thin top-level window that gets moved to a rectangle the arithmetic proved. Same
+split as `app/frame.py`: model and widget in one module, Qt imported at the top.
 
 R2: nothing this app paints may land inside the recorded region. R3: the main
 window only collapses when it actually covers part of that region. R5: where the
 strip goes is decided by an algorithm, once, at the moment of collapsing.
 
 The invariant this module exists to make checkable is a statement about
-rectangles, so it stays a statement about rectangles here: no widget, no window,
-no palette. `app/strip.py`'s counterpart in U2 is the thin top-level window that
-gets *moved to* the rectangle `strip_placement` returns; if that window ever ends
-up somewhere else, the geometry proved here stops being a proof about pixels.
+rectangles, so the statement stays free of widgets: no window, no palette, and
+`should_collapse` / `strip_placement` take and return only plain tuples, `Region`,
+`str` and `bool`. The widget below never recomputes any of it, so if it ever ends
+up somewhere else, the geometry proved here stops being a proof about pixels --
+which is the link `tests/test_mainwindow_strip.py` pins.
 
 Placement rule (KTD3): the four screen bands, in the fixed order
 top -> bottom -> left -> right. A band qualifies only when *both* dimensions
@@ -28,7 +34,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import QLabel, QPushButton, QWidget
+
 from .aspect import Region
+from .formatting import format_duration
 
 BAR = "bar"            # horizontal: duration left, stop right (top and bottom bands)
 STACKED = "stacked"    # vertical: duration above stop (left and right bands)
@@ -219,3 +229,127 @@ def strip_placement(region, screen_w, screen_h, strip_size: StripSizes = STRIP_S
     side = max(SIDE_ORDER, key=lambda candidate: gaps[candidate])
     rect = _rect_for(side, screen_w, screen_h, strip_size)
     return rect, side, LAYOUT_OF[side], _intersects(rect, box)
+
+
+# ---------------------------------------------------------------------------
+# The window: the only part of this module that owns a pixel. What it shows is
+# fixed by R4 -- the elapsed time and one Stop button, nothing else -- and it
+# decides nothing: MainWindow computes `strip_placement` once and hands the
+# answer to `place()`, so where the arithmetic proved it fits is where it lands
+# (R5: fixed the moment it is computed, never dragged).
+# ---------------------------------------------------------------------------
+class ControlStrip(QWidget):
+    """The strip itself: a small always-on-top window with a time and one button.
+
+    The window recipe is `app/frame.py::_Piece`'s verbatim -- frameless,
+    stays-on-top, WM-bypassing, `WA_ShowWithoutActivating` -- and it is built
+    without a parent, so it is its own top-level and not a bar inside the window
+    that has to disappear (KTD2). That recipe is what makes R7 workable: an
+    override-redirect rectangle that never takes activation, so keys keep going
+    wherever they were going and it covers nothing it was not told to cover.
+
+    The button starts disabled and stays that way until the capture is live: the
+    strip is on the desktop *before* `recorder.start()` (KTD1), and between the
+    two there is a synchronous audio probe that can take seconds, during which
+    pressing Stop would have nothing to stop (R9).
+
+    Signals:
+        stop_requested(): the one button was pressed. Delivered to MainWindow's
+            stop slot -- the strip holds no controller, so there is exactly one
+            close-out path whichever button the user finds (R10).
+    """
+
+    stop_requested = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._layout_kind = BAR
+        self._inside = False
+
+        self.setWindowFlags(
+            Qt.FramelessWindowHint
+            | Qt.WindowStaysOnTopHint
+            | Qt.X11BypassWindowManagerHint
+        )
+        self.setAttribute(Qt.WA_ShowWithoutActivating)  # never steal focus
+        # KTD7: both colours are set here, explicitly. Inheriting them from the
+        # palette would paint Qt's window grey, which sits within 16 of the
+        # frame's white marks -- a leaked strip would then read as a leaked frame.
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet(
+            f"ControlStrip {{ background-color: {BACKGROUND_COLOR}; }}"
+            f"QLabel {{ background: transparent; color: {TEXT_COLOR}; }}"
+            f"QPushButton {{ background-color: {BACKGROUND_COLOR}; color: {TEXT_COLOR};"
+            f" border: 1px solid {TEXT_COLOR}; padding: 0px; }}"
+        )
+
+        self._time_label = QLabel(format_duration(0), self)
+        self._stop_btn = QPushButton("Stop", self)
+        self._stop_btn.setObjectName("strip_stop")    # the manual row finds it by name
+        self._stop_btn.setEnabled(False)              # live only once RECORDING is
+        self._stop_btn.clicked.connect(self._forward_stop)
+
+    # -- placement ----------------------------------------------------------
+    def place(self, rect, layout: str, inside: bool = False) -> None:
+        """Move onto the global `rect` that `strip_placement` returned.
+
+        `layout` decides where the label and the button sit inside it; `inside` is
+        the model's own answer about whether these pixels are being recorded, kept
+        as `is_over_region` so a test can ask the window rather than re-deriving it.
+        Nothing here recomputes anything: the caller has the algorithm, this is the
+        applier (R5).
+        """
+        x, y, w, h = rect
+        self._layout_kind = layout
+        self._inside = bool(inside)
+        self.setFixedSize(w, h)
+        self.setGeometry(x, y, w, h)
+        self._arrange(w, h)
+
+    def _arrange(self, w: int, h: int) -> None:
+        """The two controls inside a strip of `w` x `h`, per `self._layout_kind`.
+
+        The inset and gap constants are what made `BAR_SIZE`/`STACKED_SIZE` in the
+        first place, so applying them back is the round trip that proves the window
+        is the rectangle. `_clamp` keeps a control that no longer fits at the near
+        edge instead of at a negative coordinate.
+        """
+        lw, lh = LABEL_SIZE
+        bw, bh = STOP_BUTTON_SIZE
+        if self._layout_kind == BAR:
+            label_at = (STRIP_INSET, _centred(h, lh))
+            button_at = (STRIP_INSET + lw + STRIP_GAP, _centred(h, bh))
+        else:
+            label_at = (_centred(w, lw), STRIP_INSET)
+            button_at = (_centred(w, bw), STRIP_INSET + lh + STRIP_GAP)
+        self._time_label.setGeometry(
+            max(0, label_at[0]), max(0, label_at[1]), lw, lh)
+        self._stop_btn.setGeometry(
+            _clamp(button_at[0], 0, max(0, w - bw)),
+            _clamp(button_at[1], 0, max(0, h - bh)), bw, bh)
+
+    # -- what it shows ------------------------------------------------------
+    def set_time(self, text: str) -> None:
+        """The elapsed time, already formatted by whoever owns the clock (KTD5)."""
+        self._time_label.setText(text)
+
+    def set_stop_enabled(self, enabled: bool) -> None:
+        self._stop_btn.setEnabled(bool(enabled))
+
+    def is_visible(self) -> bool:
+        """Is the strip on the desktop? Mirrors `RegionFrame.is_visible()`."""
+        return self.isVisible()
+
+    @property
+    def is_over_region(self) -> bool:
+        """Do these pixels land inside the capture? Read-only, from `place()`."""
+        return self._inside
+
+    @property
+    def layout_kind(self) -> str:
+        """BAR or STACKED, as `place()` was told. `QWidget.layout()` is taken."""
+        return self._layout_kind
+
+    # -- the one thing a user can do here -----------------------------------
+    def _forward_stop(self, *_checked) -> None:
+        self.stop_requested.emit()

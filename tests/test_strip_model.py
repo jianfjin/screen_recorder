@@ -382,3 +382,40 @@ def test_the_strip_is_never_placed_off_the_top_left_of_the_screen(region):
     assert rect[2] > 0 and rect[3] > 0
     assert (layout == "bar") == (side in ("top", "bottom"))
     assert (rect[2], rect[3]) == (strip.BAR_SIZE if layout == "bar" else strip.STACKED_SIZE)
+
+
+# --------------------------------------------------------------------------
+# The seam U2's window must not cross
+# --------------------------------------------------------------------------
+def _no_qt_inside(value):
+    """Fail on any Qt object reachable from `value`, at any depth."""
+    if isinstance(value, (tuple, list)):
+        for item in value:
+            _no_qt_inside(item)
+        return
+    root = type(value).__module__.split(".")[0]
+    assert root != "PySide6", f"a Qt type crossed the boundary: {type(value).__name__}"
+
+
+def test_the_two_decisions_exchange_no_qt_types_with_their_caller():
+    """The guarantee U1 stated as "no Qt involved", stated structurally.
+
+    The module now also holds the strip's window (U2), so "importing app.strip
+    loads no Qt" would be a false claim to keep -- and the widget half is exactly
+    where a `QRect` could start leaking into the arithmetic. What still has to
+    hold, and what this checks instead, is that the two decisions take plain
+    rectangles and a `Region` and hand back tuples, `str` and `bool`: the only
+    reason the whole sweep above can be exhausted offscreen. The widget's end of
+    that bargain -- that it lands on the rectangle returned here -- is
+    `tests/test_mainwindow_strip.py`.
+    """
+    rect, side, layout, inside = place()
+    _no_qt_inside((rect, side, layout, inside))
+    assert all(type(coord) is int for coord in rect)
+    assert type(side) is str and type(layout) is str and type(inside) is bool
+
+    # Both shapes a caller can bring in from the Qt side: the `Region` the
+    # controller holds, and the tuple `QWidget.frameGeometry().getRect()` yields.
+    window_rect = (300, 200, 604, 194)
+    assert type(strip.should_collapse(window_rect, BASE)) is bool
+    assert type(strip.should_collapse(window_rect, rect)) is bool
