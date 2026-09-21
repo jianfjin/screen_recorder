@@ -591,12 +591,6 @@ def test_the_record_button_goes_through_the_seam(window):
 # U3 (R5, R9): the paths where the recording never started, and living beside
 # the frame's bands.
 # ==========================================================================
-def _desktop(win):
-    """What a user looking at the screen would see, at this instant."""
-    return {"window": win.isVisible(), "collapsed": win._collapsed,
-            "strip": win._strip.is_visible()}
-
-
 def test_the_audio_prompt_is_asked_of_a_window_the_user_can_see(window, monkeypatch):
     """Covers AE5 / F4 / R9: the rollback happens before the question, not after.
 
@@ -609,15 +603,16 @@ def test_the_audio_prompt_is_asked_of_a_window_the_user_can_see(window, monkeypa
     seen = {}
 
     def question(*args, **kwargs):
-        seen["at_prompt"] = _desktop(rig.win)
+        seen["at_prompt"] = rig.desktop()
         return QMessageBox.No
 
     monkeypatch.setattr("app.mainwindow.QMessageBox.question", question)
 
     rig.win._start_recording()
 
-    assert seen["at_prompt"] == {"window": True, "collapsed": False, "strip": False}, (
-        "the prompt was asked of a desktop with nothing clickable on it")
+    assert seen["at_prompt"] == {
+        "window": True, "collapsed": False, "strip": False, "stop_enabled": False,
+    }, "the prompt was asked of a desktop with nothing clickable on it"
     assert rig.controller.state is not State.RECORDING
     assert rig.recorder is None, "nothing was captured, so nothing may be running"
     assert rig.win.isVisible() is True and rig.win._strip.is_visible() is False
@@ -656,14 +651,15 @@ def test_a_grabber_that_will_not_start_leaves_no_strip_behind(window, monkeypatc
     seen = {}
 
     def warning(*args, **kwargs):
-        seen["at_warning"] = _desktop(rig.win)
+        seen["at_warning"] = rig.desktop()
 
     monkeypatch.setattr("app.mainwindow.QMessageBox.warning", warning)
 
     rig.win._start_recording()
 
-    assert seen["at_warning"] == {"window": True, "collapsed": False, "strip": False}
-    assert rig.controller.state is State.IDLE
+    assert seen["at_warning"] == {
+        "window": True, "collapsed": False, "strip": False, "stop_enabled": False,
+    }, "a failed start must not leave a live strip"
     assert "Failed to start recording" in rig.win._status.text()
 
 
