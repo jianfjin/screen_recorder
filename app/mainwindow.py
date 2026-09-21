@@ -6,6 +6,11 @@ shown after stop), F2 (no-audio prompt) live here.
 R1's seam lives here too: the buttons reach the controller through
 `_start_recording` / `_stop_recording`, which is the only place the interface can
 be moved out of the way before the grabber starts reading pixels (KTD1).
+
+Note on the requirement numbers below: the legend above is this window's own
+older numbering; the collapse, strip and restore hunks cite the recording-
+control-strip plan, whose R6 is the strip beside the frame's bands and whose
+R8 is the restore. Where a comment could read either way, it names the plan.
 """
 from __future__ import annotations
 
@@ -130,9 +135,7 @@ class MainWindow(QMainWindow):
         (KTD4), recomputed now because the user may have dragged this window onto
         the region since the last take.
         """
-        region = self._controller.region
-        if region is not None and should_collapse(self.frameGeometry().getRect(), region):
-            self._collapse_for_recording()
+        self._collapse_if_covering_region()
         self._controller.start_recording()
 
     def _stop_recording(self) -> None:
@@ -143,6 +146,18 @@ class MainWindow(QMainWindow):
         interface rides the state change it emits, not this call.
         """
         self._controller.stop_recording()
+
+    def _collapse_if_covering_region(self) -> None:
+        """The decision, in one place, for whoever is about to start capturing.
+
+        Both callers need it: the Record button, and the no-audio prompt answered
+        yes -- which resumes a start that already collapsed once and was rolled back
+        to ask. R3 is the reason this is a question and not a habit: an interface
+        that is not in the shot must never disappear from the desktop.
+        """
+        region = self._controller.region
+        if region is not None and should_collapse(self.frameGeometry().getRect(), region):
+            self._collapse_for_recording()
 
     def _collapse_for_recording(self) -> None:
         """Away with this window, up goes the strip, in that order. Idempotent.
@@ -345,7 +360,7 @@ class MainWindow(QMainWindow):
             # `controller.start_recording()`: the probe that just failed would
             # run again and fail again, re-entering this handler without bound
             # (KTD1(a)).
-            self._collapse_for_recording()
+            self._collapse_if_covering_region()
             self._controller.continue_without_audio()
 
     def _on_stopped(self, path: str) -> None:
@@ -359,9 +374,10 @@ class MainWindow(QMainWindow):
         # with a visible window and no way to close it.
         self._collapsed = False
         self._restore_anchor = None
-        # Hidden, not deleted: like the frame's bands, the strip is a top-level
-        # this window's Python attribute keeps a reference to, and deleting its C++
-        # object under that reference is a crash waiting for the next signal.
+        # The strip is hidden rather than deleteLater'd, unlike the frame above it:
+        # this window's attribute keeps exactly one reference to its C++ object and it
+        # is still connected to the stop slot, so a delete here would only be safe
+        # because nothing outlives it -- and there is nothing to gain.
         self._strip.hide()
         self._frame.clear()   # unparented top-level: hide it explicitly
         self._frame.deleteLater()

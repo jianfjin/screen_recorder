@@ -737,3 +737,25 @@ def test_two_takes_place_the_strip_from_where_the_window_is_now(window):
     assert rig.win._collapsed is True
     assert rig.win._strip.geometry().getRect() == first, (
         "the same region must place the strip in the same spot")
+
+
+def test_answering_yes_does_not_collapse_a_window_that_was_clear_of_it(
+        window, monkeypatch):
+    """Covers R3 on the path the rollback reopens.
+
+    Asking the no-audio question puts the interface back on the desktop; answering
+    yes has to move it out of the shot again -- but "again" is the same question
+    Record asks, not an unconditional habit. Re-collapsing without asking it hid an
+    interface that was never in the recording, which is the one thing R3 forbids.
+    """
+    rig = window(at=CLEAR_OF_REGION, audio_available=lambda: False)
+    monkeypatch.setattr("app.mainwindow.QMessageBox.question",
+                        lambda *a, **k: QMessageBox.Yes)
+
+    rig.win._start_recording()
+
+    assert rig.controller.state is State.RECORDING
+    assert rig.recorder.with_audio is False
+    assert rig.win._collapsed is False, "nothing was in the shot, so nothing moved"
+    assert rig.win.isVisible() is True
+    assert rig.win._strip.is_visible() is False

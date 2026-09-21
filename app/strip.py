@@ -80,10 +80,11 @@ class StripSizes:
 STRIP_SIZES = StripSizes()
 
 # Room kept for the persistent region frame (app/frame.py), which stays on screen
-# while recording and must not end up underneath the strip (R6). `BAND_RESERVE`
-# is pinned to RegionFrame.BAND -- the tests say so, since importing the frame
-# here would import Qt. The top band carries the frame's label tab as well, and
-# that stands a further text line above its own band, hence the extra reserve.
+# while recording and must not end up underneath the strip (R6). The value is pinned
+# to RegionFrame.BAND by a test instead of an import: this is geometry, and keeping
+# it free of the frame keeps the sweep in the tests a sweep of arithmetic. The top
+# band carries the frame's label tab as well, which stands a further text line
+# above its own band, hence the second constant.
 BAND_RESERVE = 6               # >= RegionFrame.BAND
 LABEL_TAB_RESERVE = 20         # >= RegionFrame.tab_height() as this box draws it
 
@@ -351,10 +352,6 @@ class ControlStrip(QWidget):
         """Do these pixels land inside the capture? Read-only, from `place()`."""
         return self._inside
 
-    @property
-    def layout_kind(self) -> str:
-        """BAR or STACKED, as `place()` was told. `QWidget.layout()` is taken."""
-        return self._layout_kind
 
     # -- the one thing a user can do here -----------------------------------
     def _forward_stop(self, *_checked) -> None:

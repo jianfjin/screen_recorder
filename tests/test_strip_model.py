@@ -48,6 +48,15 @@ def rgb(hex_colour):
     return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
 
 
+def _shared_pixels(a, b):
+    # The area form of the overlap check below: R6 is a claim about pixels that
+    # get covered, so the test counts them instead of borrowing the modules bool.
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    width = min(ax + aw, bx + bw) - max(ax, bx)
+    height = min(ay + ah, by + bh) - max(ay, by)
+    return max(0, width) * max(0, height)
+
 def overlaps(rect, region):
     """Do these rectangles share a pixel? An edge in common is not a pixel.
 
@@ -419,3 +428,22 @@ def test_the_two_decisions_exchange_no_qt_types_with_their_caller():
     window_rect = (300, 200, 604, 194)
     assert type(strip.should_collapse(window_rect, BASE)) is bool
     assert type(strip.should_collapse(window_rect, rect)) is bool
+
+
+def test_when_no_band_fits_the_strip_may_share_a_band_but_never_the_region():
+    """R6's limit, stated as what it is rather than as a guarantee it cannot keep.
+
+    The first-fit rule earns the "covers nothing" property: a band with room for
+    the strip plus the reserve has no frame piece left to sit on. The branch that
+    runs when no band has room cannot promise the same thing -- the strip is flush
+    with the screen edge, and the frame's band is the only ground between it and
+    the region. What KTD6 still guarantees there is that the strip is raised above
+    the band, so the stop button stays the clickable thing. R2's promise, that the
+    region keeps its own pixels, holds on both branches -- asserted below.
+    """
+    rect, side, layout, inside = place(Region(0, 0, 1000, 954), screen=(1000, 1000))
+    assert (side, layout, inside) == ("bottom", "bar", False)
+
+    band = (-strip.BAND_RESERVE, 954, 1000 + 2 * strip.BAND_RESERVE, strip.BAND_RESERVE)
+    assert _shared_pixels(rect, band) > 0, "premise: this is the crowded case"
+    assert _shared_pixels(rect, (0, 0, 1000, 954)) == 0

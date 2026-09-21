@@ -193,6 +193,7 @@ def main(argv=None) -> int:
     else:
         window.move(*_park_main_window_away_from(screen.width(), screen.height(),
                                                  region, RegionFrame.BAND))
+    placed = strip_placement(region, screen.width(), screen.height())
     window_rect = window.frameGeometry().getRect()
     origin = window.mapToGlobal(QPoint(0, 0))   # the pixels the user sees, not the
     window_pos = (origin.x(), origin.y())   # frame a WM may only report after map
@@ -319,8 +320,8 @@ def main(argv=None) -> int:
         "window_rect": list(window_rect),
         "collapse_expected": should_collapse(window_rect, region),
         "strip_colors": [_rgb(BACKGROUND_COLOR), _rgb(TEXT_COLOR)],
-        "strip_inside": strip_placement(region, screen.width(), screen.height())[3],
-        "strip_rect": list(strip_placement(region, screen.width(), screen.height())[0]),
+        "strip_inside": placed[3],
+        "strip_rect": list(placed[0]),
         "after_stop": log_after_stop,
     }))
     return 0
