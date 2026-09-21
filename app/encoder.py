@@ -126,7 +126,17 @@ class Recorder:
                 self._wait(proc, timeout)
             if proc.poll() is None:
                 proc.kill()
-        return proc.wait()
+        try:
+            # The reaping wait has to be bounded like the two above it: stop()
+            # runs on the GUI thread, and a child that cannot be reaped -- stuck
+            # in kernel I/O, or blocked writing to a stderr pipe nobody drains --
+            # would otherwise freeze the whole interface right here, with no
+            # repaint, no button answering and no window coming back. Returning
+            # None says what is true: the file is whatever ffmpeg got to, and the
+            # exit code is unknown.
+            return proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return None
 
     @staticmethod
     def _send(proc: subprocess.Popen, text: str) -> None:

@@ -1,11 +1,12 @@
 import datetime
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from app.aspect import Region
-from app.encoder import build_args, make_output_path
+from app.encoder import Recorder, build_args, make_output_path
 
 
 def _a(region, aspect, with_audio=True, display=":1", out="/tmp/o.mp4"):
@@ -95,3 +96,47 @@ def test_make_output_path_defaults_to_home_videos(tmp_path, monkeypatch):
     p = f(when=datetime.datetime(2026, 7, 11, 12, 34, 56))
     assert p.parent == tmp_path / "Videos"
     assert p.parent.exists()
+
+
+class _StubbornProcess:
+    # A child that will not be reaped: poll() never sees an exit, and an
+    # untimed wait() blocks forever. That is the shape of an ffmpeg stuck in
+    # kernel I/O or blocked on an unread stderr pipe.
+    returncode = None
+
+    def __init__(self):
+        self.signals = []
+        self.killed = False
+
+    def poll(self):
+        return None
+
+    def wait(self, timeout=None):
+        if timeout is None:
+            raise _WouldBlockForever()
+        raise subprocess.TimeoutExpired("ffmpeg", timeout)
+
+    def send_signal(self, sig):
+        self.signals.append(sig)
+
+    def kill(self):
+        self.killed = True
+
+    stdin = None
+
+
+class _WouldBlockForever(Exception):
+    pass
+
+
+def test_stop_never_waits_on_a_child_that_cannot_be_reaped(tmp_path):
+    # stop() runs on the GUI thread, so an unbounded wait here is the whole
+    # interface hanging: no repaint, no button answering, no window coming back.
+    rec = Recorder(["-i", "x"])
+    proc = _StubbornProcess()
+    rec._proc = proc
+
+    result = rec.stop(timeout=0.01)
+
+    assert proc.killed is True, "the escalation to kill must still happen"
+    assert result is None, "an unreapable child must report no exit code, not block"
