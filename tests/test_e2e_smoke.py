@@ -112,7 +112,8 @@ def _read_raw(path: Path, width: int, height: int) -> bytes:
     return data
 
 
-def _run_frame_host(tmp_path, region: Region, tag: str, drag=None) -> dict:
+def _run_frame_host(tmp_path, region: Region, tag: str, drag=None,
+                    window_mode="away", session_may_skip=True) -> dict:
     """Show the real windows on the live display, record, and collect the output."""
     art = tmp_path / f"host_{tag}"
     video = art / "capture.mp4"
@@ -120,12 +121,16 @@ def _run_frame_host(tmp_path, region: Region, tag: str, drag=None) -> dict:
         [sys.executable, "-m", "tests.e2e_frame_host",
          "--region", f"{region.x},{region.y},{region.w},{region.h}",
          "--out", str(video), "--art-dir", str(art),
-         "--display", os.environ["DISPLAY"]]
+         "--display", os.environ["DISPLAY"],
+         "--window-mode", window_mode]
         + (["--drag-while-recording", f"{drag[0]},{drag[1]}"] if drag else []),
         cwd=str(REPO_ROOT),
         env={**os.environ, "QT_QPA_PLATFORM": "xcb"},
         capture_output=True, text=True, timeout=180,
     )
+    if proc.returncode == 2 and not session_may_skip:
+        raise AssertionError(
+            f"the live host could not establish its own premise: {proc.stderr.strip()}")
     if proc.returncode == 2:      # the host knows the screen it was given
         pytest.skip(f"live display cannot host this check: {proc.stderr.strip()}")
     assert proc.returncode == 0, (
@@ -136,13 +141,23 @@ def _run_frame_host(tmp_path, region: Region, tag: str, drag=None) -> dict:
     return manifest
 
 
-def _assert_frame_never_enters_the_capture(tmp_path, region: Region, tag: str, drag=None):
-    manifest = _run_frame_host(tmp_path, region, tag, drag=drag)
+def _assert_frame_never_enters_the_capture(tmp_path, region: Region, tag: str, drag=None,
+                                           window_mode="away", session_may_skip=True):
+    manifest = _run_frame_host(tmp_path, region, tag, drag=drag,
+                               window_mode=window_mode,
+                               session_may_skip=session_may_skip)
     screen_w, screen_h = manifest["screen"]
     gray = manifest["gray"]
     band = manifest["band"]
     idle_rgb, rec_rgb = _rgb(manifest["idle_color"]), _rgb(manifest["recording_color"])
-    frame_colours = (idle_rgb, rec_rgb, (255, 255, 255))  # bands, and their marks
+    # The frame's colours, its white marks, and the strip's own two (KTD7): any of
+    # them in the picture means this app painted inside the capture. Without the
+    # strip's colours a strip leak would surface only as the grey-ratio floor below,
+    # and would be blamed on the frame.
+    frame_colours = (idle_rgb, rec_rgb, (255, 255, 255)) + tuple(
+        tuple(c) for c in manifest["strip_colors"])
+    if manifest["strip_inside"]:
+        frame_colours = frame_colours[:3]   # AE3: there, it is expected, not a leak
 
     def is_frame(p):
         return any(_close(p, colour) for colour in frame_colours)
@@ -250,6 +265,7 @@ def _assert_frame_never_enters_the_capture(tmp_path, region: Region, tag: str, d
         assert log, "the host reported no refused drag, so this checked nothing"
         assert log["before"] == log["after"] == [region.x, region.y, region.w, region.h], (
             f"the refused gesture moved the region anyway: {log}")
+    return manifest
 
 
 def test_e2e_frame_pixels_absent_flush_region(tmp_path):
@@ -287,3 +303,63 @@ def test_e2e_frame_pixels_absent_while_a_drag_is_refused(tmp_path):
         pytest.skip("real capture e2e needs RUN_E2E=1, ffmpeg, and an X DISPLAY")
     _assert_frame_never_enters_the_capture(
         tmp_path, Region(1000, 300, 1280, 720), "refused_drag", drag=(150, 90))
+
+
+def test_e2e_the_interface_gets_out_of_its_own_recording(tmp_path):
+    """R1, R2, R8, AE1: this app's window leaves the shot before frame one.
+
+    The premise is checked before the conclusion. The idle grab has to show the
+    window sitting on the region's pixels; if it does not, "the file holds no
+    window" would only mean the window was never there. Then the file has to hold
+    none of it -- and none of the strip it collapsed into -- while those same
+    coordinates read plain canvas grey on the desktop. A host that cannot prove
+    its own display painted anything fails here instead of skipping, because a
+    skip is exactly how this row would go green having proved nothing.
+    """
+    if not _has_env():
+        pytest.skip("real capture e2e needs RUN_E2E=1, ffmpeg, and an X DISPLAY")
+    region = Region(1200, 400, 1280, 720)
+    manifest = _assert_frame_never_enters_the_capture(
+        tmp_path, region, "collapse", window_mode="over", session_may_skip=False)
+
+    assert manifest["collapse_expected"] is True, (
+        "the window was never on the region, so this checked the wrong thing")
+    screen_w, screen_h = manifest["screen"]
+    wx, wy, ww, wh = manifest["window_rect"]
+    gray = tuple(manifest["gray"])
+    probes = [(x, y) for y in range(wy + 8, wy + wh - 8, 12)
+              for x in range(wx + 8, wx + ww - 8, 12)]
+    assert len(probes) > 100, "the window is too small on screen to check"
+
+    idle = _read_raw(Path(manifest["grabs"]["idle"]), screen_w, screen_h)
+    painted = [p for p in probes if not _close(_pixel(idle, screen_w, *p), gray, 45)]
+    assert len(painted) >= 0.9 * len(probes), (
+        f"only {len(painted)}/{len(probes)} of the window's own pixels were on the "
+        f"desktop before recording, so there was nothing here to collapse")
+
+    during = _read_raw(Path(manifest["grabs"]["recording"]), screen_w, screen_h)
+    gone = [p for p in probes if _close(_pixel(during, screen_w, *p), gray, 45)]
+    assert len(gone) >= 0.95 * len(probes), (
+        f"{len(probes) - len(gone)} of the window's pixels are still on screen "
+        f"while recording, so they are in the file's first frames (R1)")
+
+    sx, sy, sw, sh = manifest["strip_rect"]
+    assert _close(_pixel(during, screen_w, sx + sw // 2, sy + sh // 2),
+                  tuple(manifest["strip_colors"][0]), 45), (
+        "no strip at the rectangle the geometry picked: with the window hidden and "
+        "nothing to click, a clean recording is not what the user asked for (R4)")
+
+    assert manifest["after_stop"]["stop_via"] == "strip", (
+        "the run stopped through the window, not the only control on screen")
+    anchor = list(manifest["window_pos"])
+    restored_pos = manifest["after_stop"]["window_pos"]
+    assert restored_pos == anchor, (
+        f"the window did not return to where it was hidden from (R8): anchor "
+        f"{anchor}, restored {restored_pos}")
+    assert manifest["after_stop"]["window_mapped"] is True, (
+        "nothing is mapped where the window used to be, so the position match "
+        "above would be a restore in name only (R8)")
+    # Whether it came back on top is not what R8 promises, and raising it here
+    # would break AE7: whoever the user was working in while the strip was up
+    # would lose their focus. That the restored window is reachable is the
+    # manual row of the plan Verification Contract.
