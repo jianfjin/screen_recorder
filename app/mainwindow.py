@@ -307,6 +307,12 @@ class MainWindow(QMainWindow):
         self._frame.clear()
 
     def _on_audio_missing(self) -> None:
+        # This signal fires synchronously from inside the `start_recording()`
+        # call that `_start_recording` just made, so the window is already
+        # hidden and the strip is up with a stop button that has nothing to
+        # stop. Put both back before asking: the prompt's parent is the window
+        # that is not on the desktop (R9, F4).
+        self._restore_from_recording()
         answer = QMessageBox.question(
             self,
             "No system audio",
@@ -316,6 +322,12 @@ class MainWindow(QMainWindow):
             QMessageBox.No,
         )
         if answer == QMessageBox.Yes:
+            # Collapse again through the one seam, then continue silently.
+            # Deliberately *not* `_start_recording()` or
+            # `controller.start_recording()`: the probe that just failed would
+            # run again and fail again, re-entering this handler without bound
+            # (KTD1(a)).
+            self._collapse_for_recording()
             self._controller.continue_without_audio()
 
     def _on_stopped(self, path: str) -> None:
@@ -338,5 +350,10 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _on_error(self, message: str) -> None:
+        # Restore first, for the same reason as the audio prompt: a failure on
+        # the way in (`_begin` could not start the grabber) otherwise leaves a
+        # desktop holding only a strip whose stop button is disabled, and a
+        # warning parented to a hidden window (R9).
+        self._restore_from_recording()
         self._status.setText(message)
         QMessageBox.warning(self, "Recording error", message)

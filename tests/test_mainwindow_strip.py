@@ -5,6 +5,10 @@ starts, the strip lands on the rectangle U1's geometry picked and nowhere else,
 one clock drives both time labels, one stop path has two entrances, and every way
 out of the collapse (stop, error, close) takes the strip with it.
 
+U3 (R5, R9) added the rollback and coexistence cases at the bottom: a recording
+that never started leaves no strip behind, and the strip neither moves under a
+refused drag nor covers a frame band.
+
 What cannot be proved offscreen, and is therefore the live/manual rows of the
 plan's Verification Contract rather than an assertion:
   * stacking order -- Qt has `raise_()` but no way to read the X stack, so the
@@ -29,7 +33,7 @@ import pytest
 from PySide6.QtCore import QPoint, QRect, QTimer, Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from app import strip as strip_model
 from app.aspect import Region
@@ -90,10 +94,11 @@ class SpyRecorder:
     only honest place to ask what was on the desktop when recording began.
     """
 
-    def __init__(self, observe, log):
+    def __init__(self, observe, log, with_audio=None):
         self._observe = observe
         self.log = log
         self.desktop_at_start = None
+        self.with_audio = with_audio   # which encoder variant the caller chose
 
     def start(self):
         self.desktop_at_start = self._observe()
@@ -110,19 +115,29 @@ class SpyRecorder:
 class Rig:
     """MainWindow + a real controller + a capture process that only takes notes."""
 
-    def __init__(self, region=REGION):
+    def __init__(self, region=REGION, *, audio_available=None, recorder_factory=None):
         self.log = []
         self._recorder = None
+        self._recorder_factory = recorder_factory
+        self.probe_calls = 0
+        probe = (lambda: True) if audio_available is None else audio_available
+
+        def counted_probe():
+            self.probe_calls += 1
+            return probe()
+
         self.controller = RecordingController(
             make_recorder=self._make_recorder,
-            audio_available=lambda: True,
+            audio_available=counted_probe,
             make_path=lambda base_dir=None: "/tmp/sr_strip.mp4",
         )
         self.win = MainWindow(self.controller)
         self.controller.set_region(region)
 
     def _make_recorder(self, region, aspect, out_path, with_audio, display=None):
-        self._recorder = SpyRecorder(self.desktop, self.log)
+        if self._recorder_factory is not None:
+            return self._recorder_factory(self, region, aspect, out_path, with_audio)
+        self._recorder = SpyRecorder(self.desktop, self.log, with_audio)
         return self._recorder
 
     @property
@@ -158,8 +173,8 @@ class Rig:
 def window(qapp):
     opened = []
 
-    def open_window(*, region=REGION, at=OVER_REGION, show=True):
-        rig = Rig(region=region)
+    def open_window(*, region=REGION, at=OVER_REGION, show=True, **rig_kwargs):
+        rig = Rig(region=region, **rig_kwargs)
         opened.append(rig)
         if show:
             rig.win.show()
@@ -569,3 +584,159 @@ def test_the_record_button_goes_through_the_seam(window):
 
     rig.win._stop_btn.click()
     assert rig.win.isVisible() is True
+
+
+# ==========================================================================
+# U3 (R5, R9): the paths where the recording never started, and living beside
+# the frame's bands.
+# ==========================================================================
+def _desktop(win):
+    """What a user looking at the screen would see, at this instant."""
+    return {"window": win.isVisible(), "collapsed": win._collapsed,
+            "strip": win._strip.is_visible()}
+
+
+def test_the_audio_prompt_is_asked_of_a_window_the_user_can_see(window, monkeypatch):
+    """Covers AE5 / F4 / R9: the rollback happens before the question, not after.
+
+    `audio_missing` is emitted synchronously from inside the
+    `controller.start_recording()` that `_start_recording` just called, so without
+    the restore the dialog would be parented to a hidden window while the desktop
+    held nothing but a strip whose stop button does nothing.
+    """
+    rig = window(audio_available=lambda: False)
+    seen = {}
+
+    def question(*args, **kwargs):
+        seen["at_prompt"] = _desktop(rig.win)
+        return QMessageBox.No
+
+    monkeypatch.setattr("app.mainwindow.QMessageBox.question", question)
+
+    rig.win._start_recording()
+
+    assert seen["at_prompt"] == {"window": True, "collapsed": False, "strip": False}, (
+        "the prompt was asked of a desktop with nothing clickable on it")
+    assert rig.controller.state is not State.RECORDING
+    assert rig.recorder is None, "nothing was captured, so nothing may be running"
+    assert rig.win.isVisible() is True and rig.win._strip.is_visible() is False
+
+
+def test_answering_yes_recollapses_without_re_entering_the_seam(window, monkeypatch):
+    """Covers R9 / KTD1(a): one more collapse, exactly one more look at the audio.
+
+    Calling `_start_recording()` again from here would re-run the probe that just
+    failed and raise the same prompt again, forever. Only the collapse repeats.
+    """
+    rig = window(audio_available=lambda: False)
+
+    def question(*args, **kwargs):
+        return QMessageBox.Yes
+
+    monkeypatch.setattr("app.mainwindow.QMessageBox.question", question)
+
+    rig.win._start_recording()
+
+    assert rig.probe_calls == 1, f"the probe ran {rig.probe_calls} times: recursion"
+    assert rig.recorder is not None and rig.recorder.with_audio is False
+    assert rig.recorder.desktop_at_start == {
+        "window": False, "collapsed": True, "strip": True, "stop_enabled": False,
+    }, "a silent take must be as clean as one with sound"
+    assert rig.controller.state is State.RECORDING
+    assert rig.win._strip._stop_btn.isEnabled() is True, "now there is something to stop"
+
+
+def test_a_grabber_that_will_not_start_leaves_no_strip_behind(window, monkeypatch):
+    """Covers R9: `error` on the way in is a rollback, not an exception to it."""
+    def boom(*args, **kwargs):
+        raise RuntimeError("ffmpeg refused to start")
+
+    rig = window(recorder_factory=boom)
+    seen = {}
+
+    def warning(*args, **kwargs):
+        seen["at_warning"] = _desktop(rig.win)
+
+    monkeypatch.setattr("app.mainwindow.QMessageBox.warning", warning)
+
+    rig.win._start_recording()
+
+    assert seen["at_warning"] == {"window": True, "collapsed": False, "strip": False}
+    assert rig.controller.state is State.IDLE
+    assert "Failed to start recording" in rig.win._status.text()
+
+
+def test_the_strip_does_not_move_when_a_drag_is_refused(window):
+    """Covers R5: the placement is computed once, at the collapse (KTD3)."""
+    rig = window()
+    rig.win._start_recording()
+    before = rig.win._strip.geometry().getRect()
+
+    rig.controller.update_region(Region(1200, 400, 640, 360))   # refused mid-recording
+
+    assert rig.controller.region == REGION
+    assert rig.win._strip.geometry().getRect() == before, (
+        "the strip followed a region that was never moved")
+
+
+def test_the_strip_and_the_bands_cover_no_pixel_of_each_other(window):
+    """Covers R6: geometry first, stacking second -- a raise cannot fix an overlap.
+
+    Global rectangles only. `QWidget.rect()` on a top-level is always the local
+    (0, 0, w, h), so intersecting with that would compare the strip's size to the
+    bands and never notice where the strip actually is.
+    """
+    rig = window()
+    rig.win._start_recording()
+    strip_rect = QRect(*rig.win._strip.geometry().getRect())
+
+    for role, piece in rig.win._frame._pieces.items():
+        band = QRect(*piece.geometry().getRect())
+        overlap = strip_rect.intersected(band)
+        assert overlap.width() <= 0 or overlap.height() <= 0, (
+            f"the strip sits on the {role} piece: {strip_rect} vs {band}")
+
+
+def test_a_region_with_no_free_band_still_collapses_onto_an_inside_strip(window):
+    """Covers AE3 at R2's boundary: full screen, so the strip is in the shot.
+
+    The settled decision: collapse anyway. The strip is far smaller than the
+    window it replaces, and a full-screen recording is not refused for it.
+    """
+    rig = window(region=Region(0, 0, SCREEN_W, SCREEN_H), at=(100, 100))
+
+    rig.win._start_recording()
+
+    assert rig.win._collapsed is True
+    assert rig.win._strip.is_visible() is True
+    assert rig.win._strip.is_over_region is True
+    rect = rig.win._strip.geometry().getRect()
+    assert rect[0] >= 0 and rect[1] >= 0
+    assert QRect(0, 0, SCREEN_W, SCREEN_H).contains(QRect(*rect)), "off the screen"
+
+
+def test_two_takes_place_the_strip_from_where_the_window_is_now(window):
+    """Covers R3 and R8 as a pair, across takes, with nothing left cached.
+
+    The window moves between takes, so a later take must not reuse the answer the
+    first one computed -- nor the rectangle the first one left the strip in.
+    """
+    rig = window(at=OVER_REGION)
+
+    rig.win._start_recording()
+    first = rig.win._strip.geometry().getRect()
+    assert rig.win._collapsed is True
+    rig.win._stop_recording()
+    assert rig.win._restore_anchor is None
+
+    rig.win.move(*CLEAR_OF_REGION)
+    rig.win._start_recording()
+    assert rig.win._collapsed is False
+    assert rig.win._strip.is_visible() is False
+    rig.win._stop_recording()
+
+    rig.win.move(*OVER_REGION)
+    rig.win._start_recording()
+    assert rig.win._collapsed is True
+    assert rig.win._strip.geometry().getRect() == first, (
+        "the same region must place the strip in the same spot")

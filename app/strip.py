@@ -257,6 +257,12 @@ class ControlStrip(QWidget):
         stop_requested(): the one button was pressed. Delivered to MainWindow's
             stop slot -- the strip holds no controller, so there is exactly one
             close-out path whichever button the user finds (R10).
+
+    Scope of what it says: the elapsed time and nothing else but that button
+    (R4). The region summary lives on the main window's status line, and the
+    small tab `RegionFrame` puts above its top band is a different thing with a
+    known, separate defect (its text is clipped to the tab's own square) -- this
+    strip borrows nothing from it and carries no information that depends on it.
     """
 
     stop_requested = Signal()
