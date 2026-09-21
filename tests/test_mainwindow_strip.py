@@ -266,25 +266,26 @@ def test_a_window_clear_of_the_region_is_left_exactly_as_it_is(window):
 
 # -- R8: coming back --------------------------------------------------------
 def test_stopping_returns_the_window_to_the_spot_it_was_hidden_from(window):
-    """Covers R8 / F1: same position, on screen again, strip gone.
+    """Covers R8 / F1: the same pixels on screen again, strip gone.
 
-    The frame rectangle is compared too, not just `pos()`: it is the decorated
-    pixels that were in the recording, and the anchor only proves the round trip
-    on this box if the whole rectangle came back.
+    Measured at the client corner, because that is what the user was looking at.
+    `pos()` is the frame origin and the decoration above it is a window manager
+    matter: on a live session those extents are only reported once the window is
+    mapped, so a window coming back from hidden can match on `pos()` and still
+    land its pixels a title bar lower (the live row of R8 caught exactly that).
     """
     rig = window()
-    before_pos, before_frame = rig.win.pos(), rig.win.frameGeometry().getRect()
-    assert before_pos == QPoint(*OVER_REGION)
+    before = rig.win.mapToGlobal(QPoint(0, 0))
 
     rig.win._start_recording()
-    assert rig.win._restore_anchor == before_pos, "the collapse saved the wrong anchor"
+    assert rig.win._restore_anchor == before, "the collapse saved the wrong anchor"
 
     rig.win._stop_recording()
 
     assert rig.win._collapsed is False
     assert rig.win.isVisible() is True
-    assert rig.win.pos() == before_pos
-    assert rig.win.frameGeometry().getRect() == before_frame
+    assert rig.win.mapToGlobal(QPoint(0, 0)) == before
+    assert rig.win.pos() == QPoint(*OVER_REGION)
     assert rig.win._strip.is_visible() is False
     # `stop_recording` passes through DONE (the restore rode that change) and
     # `_on_stopped` resets to IDLE, which is the state a stopped recorder is in.

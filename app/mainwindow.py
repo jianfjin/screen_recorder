@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QElapsedTimer, QTimer
+from PySide6.QtCore import QElapsedTimer, QPoint, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
@@ -154,7 +154,10 @@ class MainWindow(QMainWindow):
         """
         if self._collapsed:
             return
-        self._restore_anchor = self.pos()
+        # The client corner, not pos(): pos() is the frame origin, and the
+        # decoration a window manager puts around it is not part of what the
+        # user was looking at (R8).
+        self._restore_anchor = self.mapToGlobal(QPoint(0, 0))
         self.hide()
         screen = QApplication.primaryScreen().geometry()
         rect, _side, layout, inside = strip_placement(
@@ -166,22 +169,37 @@ class MainWindow(QMainWindow):
         self._strip.raise_()                  # KTD6: strip above the bands
         self._collapsed = True
 
-    def _restore_from_recording(self) -> None:
-        """Put the window back where the user left it. Idempotent (R8).
+    def _frame_extents(self) -> QPoint:
+        """How far the decoration sets the client inside the frame it draws.
 
-        Position first, then show: showing a hidden top-level is the moment a
-        window manager may re-place it, and the anchor is the position the user
-        chose. Offscreen the round trip is exact; the live row of the plan's
-        Verification Contract is where a WM that moves it would show up.
+        Qt measures a window twice: pos() is the frame origin, the pixels the user
+        recognises start at the client corner, and only the window manager knows
+        the difference -- which it reports once the window is mapped.
+        """
+        return self.mapToGlobal(QPoint(0, 0)) - self.pos()
+
+    def _restore_from_recording(self) -> None:
+        """Put the window back on the pixels the user left it on (R8).
+
+        The anchor is a client corner, not a pos(): pos() names the frame, and
+        the decoration around it is for the window manager to decide. Showing a
+        hidden window is the moment a manager may re-place it, so this aims once
+        before the map and corrects after it. Offscreen the round trip is exact;
+        the live row of the plan's Verification Contract is where a manager that
+        changed its mind would show up -- and on this desktop, one did.
         """
         if not self._collapsed:
             return
         self._collapsed = False
         self._strip.hide()
-        if self._restore_anchor is not None:
-            self.move(self._restore_anchor)
-            self._restore_anchor = None
+        anchor, self._restore_anchor = self._restore_anchor, None
+        if anchor is not None:
+            self.move(anchor - self._frame_extents())
         self.show()
+        if anchor is not None and self.mapToGlobal(QPoint(0, 0)) != anchor:
+            # The manager changed the decoration while the window was hidden, and
+            # that is the one case a restore trusting pos() gets a title bar wrong.
+            self.move(anchor - self._frame_extents())
 
     def _select_region(self):
         if self._overlay is not None and self._overlay.isVisible():
